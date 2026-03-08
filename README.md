@@ -72,7 +72,7 @@ No pre-installation needed — `uvx` automatically downloads and runs the packag
 
 **Linux / macOS:**
 ```bash
-claude mcp add microsoft-teams \
+claude mcp add ms-teams \
   -s user \
   -e MS_CLIENT_ID=<your-client-id> \
   -e MS_CLIENT_SECRET=<your-client-secret> \
@@ -82,7 +82,7 @@ claude mcp add microsoft-teams \
 
 **Windows (PowerShell):**
 ```powershell
-claude mcp add microsoft-teams `
+claude mcp add ms-teams `
   -s user `
   -e MS_CLIENT_ID=<your-client-id> `
   -e MS_CLIENT_SECRET=<your-client-secret> `
@@ -96,13 +96,12 @@ On first use, ask Claude to call the `authenticate` tool — it will guide you t
 
 ### VS Code
 
-Add to `.vscode/mcp.json` in your project root:
+Add to `.vscode/mcp.json` in your project root (or under `"mcp"` key in user `settings.json` for global access):
 
-**Linux / macOS:**
 ```json
 {
   "servers": {
-    "microsoft-teams": {
+    "ms-teams": {
       "command": "uvx",
       "args": [
         "--from",
@@ -119,28 +118,7 @@ Add to `.vscode/mcp.json` in your project root:
 }
 ```
 
-**Windows:**
-```json
-{
-  "servers": {
-    "microsoft-teams": {
-      "command": "uvx.cmd",
-      "args": [
-        "--from",
-        "git+https://github.com/giljoonseok/ms-teams-mcp.git",
-        "ms-teams-mcp"
-      ],
-      "env": {
-        "MS_CLIENT_ID": "<your-client-id>",
-        "MS_CLIENT_SECRET": "<your-client-secret>",
-        "MS_TENANT_ID": "<your-tenant-id>"
-      }
-    }
-  }
-}
-```
-
-Or add the same config under `"mcp"` key in your user `settings.json` for global access.
+> **Windows**: Use `"command": "uvx.cmd"` if `uvx` is not found.
 
 ### Claude Desktop
 
@@ -153,7 +131,7 @@ Add to your config file:
 ```json
 {
   "mcpServers": {
-    "microsoft-teams": {
+    "ms-teams": {
       "command": "uvx",
       "args": [
         "--from",
@@ -174,11 +152,10 @@ Add to your config file:
 
 ### pip Install
 
-**Linux / macOS:**
 ```bash
 pip install git+https://github.com/giljoonseok/ms-teams-mcp.git
 
-claude mcp add microsoft-teams \
+claude mcp add ms-teams \
   -s user \
   -e MS_CLIENT_ID=<your-client-id> \
   -e MS_CLIENT_SECRET=<your-client-secret> \
@@ -186,17 +163,7 @@ claude mcp add microsoft-teams \
   -- ms-teams-mcp
 ```
 
-**Windows (PowerShell):**
-```powershell
-pip install "git+https://github.com/giljoonseok/ms-teams-mcp.git"
-
-claude mcp add microsoft-teams `
-  -s user `
-  -e MS_CLIENT_ID=<your-client-id> `
-  -e MS_CLIENT_SECRET=<your-client-secret> `
-  -e MS_TENANT_ID=<your-tenant-id> `
-  -- ms-teams-mcp
-```
+> **Windows (PowerShell)**: Use `pip install "git+..."` (quoted URL) and replace `\` with `` ` `` for line continuation.
 
 ### Authentication
 
@@ -237,7 +204,7 @@ The server automatically checks for updates on startup (once per 24h) and notifi
 
 ```bash
 claude mcp list                       # List registered MCP servers
-claude mcp remove microsoft-teams     # Remove server
+claude mcp remove ms-teams     # Remove server
 ```
 
 ## Available MCP Tools (32)
@@ -435,13 +402,11 @@ All list tools support `top`, `skip`, and `next_link` parameters for pagination.
 ## Project Structure
 
 ```
-microsoft-teams-mcp/
 ├── ms_teams_mcp/
 │   ├── __init__.py    # Package init
 │   └── server.py      # MCP server (single-file architecture)
 ├── pyproject.toml     # Package config & dependencies
 ├── CLAUDE.md          # Claude Code instructions
-├── TODO.md            # Development roadmap
 └── README.md
 ```
 
