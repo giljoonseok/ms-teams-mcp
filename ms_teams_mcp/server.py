@@ -34,7 +34,7 @@ SCOPES = [
     "People.Read",
     "Calendars.ReadWrite",
 ]
-TOKEN_CACHE_FILE = os.path.expanduser("~/.ms_mcp_token.json")
+TOKEN_CACHE_FILE = os.path.expanduser(os.environ.get("MS_TOKEN_CACHE", "~/.ms_mcp_token.json"))
 FILE_INDEX_PATH = os.path.expanduser("~/.ms_mcp_file_index.json")
 GITHUB_REPO = "giljoonseok/ms-teams-mcp"
 UPDATE_CHECK_CACHE = os.path.expanduser("~/.ms_mcp_update_check.json")
