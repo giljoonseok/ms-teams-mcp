@@ -68,18 +68,10 @@ Restart your terminal, then verify: `uvx --version`
 
 ### Claude Code (Recommended)
 
-No pre-installation needed — `uvx` automatically downloads and runs the package.
+No pre-installation needed — `uvx` automatically downloads and runs the package. Just register and authenticate from within Claude.
 
 **Linux / macOS:**
 ```bash
-# 1. Authenticate (one-time)
-uvx --from git+https://github.com/giljoonseok/ms-teams-mcp.git \
-  ms-teams-mcp auth \
-  --client-id <your-client-id> \
-  --client-secret <your-client-secret> \
-  --tenant-id <your-tenant-id>
-
-# 2. Register with Claude Code
 claude mcp add microsoft-teams \
   -s user \
   -e MS_CLIENT_ID=<your-client-id> \
@@ -90,14 +82,6 @@ claude mcp add microsoft-teams \
 
 **Windows (PowerShell):**
 ```powershell
-# 1. Authenticate (one-time)
-uvx --from "git+https://github.com/giljoonseok/ms-teams-mcp.git" `
-  ms-teams-mcp auth `
-  --client-id <your-client-id> `
-  --client-secret <your-client-secret> `
-  --tenant-id <your-tenant-id>
-
-# 2. Register with Claude Code
 claude mcp add microsoft-teams `
   -s user `
   -e MS_CLIENT_ID=<your-client-id> `
@@ -107,6 +91,8 @@ claude mcp add microsoft-teams `
 ```
 
 > **Windows Note**: If `uvx` is not found, use `uvx.cmd` or the full path `%USERPROFILE%\.local\bin\uvx.cmd`.
+
+On first use, ask Claude to call the `authenticate` tool — it will guide you through Device Code Flow login in your browser.
 
 ### VS Code
 
@@ -192,37 +178,31 @@ Add to your config file:
 ```bash
 pip install git+https://github.com/giljoonseok/ms-teams-mcp.git
 
-ms-teams-mcp auth \
-  --client-id <your-client-id> \
-  --client-secret <your-client-secret> \
-  --tenant-id <your-tenant-id>
-
-claude mcp add microsoft-teams ms-teams-mcp \
+claude mcp add microsoft-teams \
   -s user \
   -e MS_CLIENT_ID=<your-client-id> \
   -e MS_CLIENT_SECRET=<your-client-secret> \
-  -e MS_TENANT_ID=<your-tenant-id>
+  -e MS_TENANT_ID=<your-tenant-id> \
+  -- ms-teams-mcp
 ```
 
 **Windows (PowerShell):**
 ```powershell
 pip install "git+https://github.com/giljoonseok/ms-teams-mcp.git"
 
-ms-teams-mcp auth `
-  --client-id <your-client-id> `
-  --client-secret <your-client-secret> `
-  --tenant-id <your-tenant-id>
-
-claude mcp add microsoft-teams ms-teams-mcp `
+claude mcp add microsoft-teams `
   -s user `
   -e MS_CLIENT_ID=<your-client-id> `
   -e MS_CLIENT_SECRET=<your-client-secret> `
-  -e MS_TENANT_ID=<your-tenant-id>
+  -e MS_TENANT_ID=<your-tenant-id> `
+  -- ms-teams-mcp
 ```
 
 ### Authentication
 
-All installation methods require a one-time Device Code Flow authentication:
+On first use, call the `authenticate` tool from your MCP client — it will provide a Device Code Flow URL to sign in via your browser.
+
+Alternatively, you can authenticate from the CLI before starting:
 
 ```bash
 # Using uvx
@@ -238,8 +218,6 @@ ms-teams-mcp auth \
   --client-secret <your-client-secret> \
   --tenant-id <your-tenant-id>
 ```
-
-You can also authenticate from within any MCP client by calling the `authenticate` tool.
 
 Token is cached at `~/.ms_mcp_token.json` and silently renewed on subsequent runs.
 

@@ -48,12 +48,13 @@ Single-file MCP server in `ms_teams_mcp/server.py`:
 ### Claude Code (CLI)
 
 ```bash
-ms-teams-mcp auth --client-id <ID> --client-secret <SECRET> --tenant-id <TENANT>
 claude mcp add microsoft-teams \
   -s user \
   -e MS_CLIENT_ID=<ID> -e MS_CLIENT_SECRET=<SECRET> -e MS_TENANT_ID=<TENANT> \
   -- ms-teams-mcp
 ```
+
+First use: call the `authenticate` tool from Claude to sign in via Device Code Flow.
 
 Verify: `claude mcp list` | Remove: `claude mcp remove microsoft-teams`
 
