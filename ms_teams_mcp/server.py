@@ -1434,18 +1434,19 @@ def auth_status() -> str:
             "Call the authenticate tool to re-authenticate."
         )
 
+_pending_device_flow = None
+
 def _device_code_auth(on_flow_started=None):
     """Device Code Flow common logic. Returns (status, username) on success, raises on failure."""
-    # 1. Try silent token refresh
-    app = _get_app()
-    accounts = app.get_accounts()
+    # 1. Quick check: only try silent refresh if cached accounts exist
+    accounts = _get_app().get_accounts() if os.path.exists(TOKEN_CACHE_FILE) else []
     if accounts:
-        result = app.acquire_token_silent(SCOPES, account=accounts[0], force_refresh=True)
+        result = _get_app().acquire_token_silent(SCOPES, account=accounts[0])
         if result and "access_token" in result:
             save_cache()
             return ("refreshed", accounts[0]["username"])
 
-    # 2. Start Device Code Flow
+    # 2. Start Device Code Flow (skip slow silent refresh, go straight to link)
     pub_app = _get_pub_app()
     flow = pub_app.initiate_device_flow(scopes=SCOPES)
     if "user_code" not in flow:
@@ -1466,20 +1467,66 @@ def _device_code_auth(on_flow_started=None):
 @mcp.tool()
 def authenticate() -> str:
     """
-    Authenticate via Device Code Flow.
-    Visit the returned URL and enter the code to complete authentication.
+    Start authentication via Device Code Flow (Step 1 of 2).
+    Returns the login URL and code immediately.
+    After visiting the URL and entering the code in your browser, call authenticate_complete to finish.
     """
-    def on_flow(flow):
-        print(f"[MCP authenticate] Visit: {flow['verification_uri']} / Code: {flow['user_code']}", flush=True)
+    global _pending_device_flow
 
+    # Quick check: if already authenticated, return immediately
     try:
-        status, username = _device_code_auth(on_flow_started=on_flow)
-    except RuntimeError as e:
-        return str(e)
+        accounts = _get_app().get_accounts() if os.path.exists(TOKEN_CACHE_FILE) else []
+        if accounts:
+            result = _get_app().acquire_token_silent(SCOPES, account=accounts[0])
+            if result and "access_token" in result:
+                save_cache()
+                return f"Token already valid. Account: {accounts[0]['username']}"
+    except Exception:
+        pass
 
-    if status == "refreshed":
-        return f"Token already valid. Account: {username}"
-    return f"Authentication complete!\nAccount: {username}\nToken saved to: {TOKEN_CACHE_FILE}"
+    # Start Device Code Flow and return URL/code immediately
+    try:
+        pub_app = _get_pub_app()
+        flow = pub_app.initiate_device_flow(scopes=SCOPES)
+        if "user_code" not in flow:
+            return f"Failed to start Device Code Flow: {flow.get('error_description', flow)}"
+
+        _pending_device_flow = flow
+        return (
+            f"Visit this URL to authenticate:\n\n"
+            f"  URL:  {flow['verification_uri']}\n"
+            f"  Code: {flow['user_code']}\n\n"
+            f"After entering the code in your browser, call the authenticate_complete tool to finish."
+        )
+    except Exception as e:
+        return f"Failed to start authentication: {e}"
+
+@mcp.tool()
+def authenticate_complete() -> str:
+    """
+    Complete authentication (Step 2 of 2).
+    Call this after you have visited the URL and entered the code from the authenticate tool.
+    """
+    global _pending_device_flow
+
+    if _pending_device_flow is None:
+        return "No pending authentication flow. Call the authenticate tool first."
+
+    flow = _pending_device_flow
+    try:
+        pub_app = _get_pub_app()
+        result = pub_app.acquire_token_by_device_flow(flow)
+        _pending_device_flow = None
+
+        if "access_token" in result:
+            save_cache()
+            username = result.get("id_token_claims", {}).get("preferred_username", "Unknown")
+            return f"Authentication complete!\nAccount: {username}\nToken saved to: {TOKEN_CACHE_FILE}"
+        else:
+            return f"Authentication failed: {result.get('error_description', result)}"
+    except Exception as e:
+        _pending_device_flow = None
+        return f"Authentication failed: {e}"
 
 # ─────────────────────────────────────────
 # CLI: Auth subcommand
@@ -1513,6 +1560,7 @@ def cmd_auth():
         print("=" * 60, file=sys.stderr, flush=True)
         print("\nWaiting for authentication...", file=sys.stderr, flush=True)
 
+    print("Connecting to Microsoft identity platform...", file=sys.stderr, flush=True)
     try:
         status, username = _device_code_auth(on_flow_started=on_flow)
     except RuntimeError as e:
