@@ -159,6 +159,19 @@ def graph_post(path: str, body: dict):
     _check_response(res)
     return res.json()
 
+def graph_patch(path: str, body: dict):
+    """Graph API PATCH for updating resources"""
+    url = f"https://graph.microsoft.com/v1.0{path}"
+    res = requests.patch(url, headers=_headers(), json=body)
+    _check_response(res)
+    return res.json()
+
+def graph_delete(path: str):
+    """Graph API DELETE for removing resources"""
+    url = f"https://graph.microsoft.com/v1.0{path}"
+    res = requests.delete(url, headers=_headers())
+    _check_response(res)
+
 def graph_post_action(path: str, body: dict):
     """Graph API POST for 202 No Content responses — sendMail, reply, forward, etc."""
     url = f"https://graph.microsoft.com/v1.0{path}"
@@ -769,6 +782,213 @@ def create_calendar_event(subject: str, start: str, end: str, attendees: str = "
         if meeting_url:
             result += f"\n- Teams meeting URL: {meeting_url}"
     return result
+
+@mcp.tool()
+def update_calendar_event(
+    event_id: str,
+    subject: str = "",
+    start: str = "",
+    end: str = "",
+    attendees: str = "",
+    location: str = "",
+    body: str = "",
+    is_online: str = "",
+) -> str:
+    """
+    Update an existing calendar event.
+    IMPORTANT: Always show the updated details to the user and get explicit confirmation before calling this tool.
+    - event_id: Event ID (from list_calendar_events)
+    - subject: New subject/title (optional, leave empty to keep current)
+    - start: New start datetime in ISO format e.g. 2026-03-10T09:00:00 (optional)
+    - end: New end datetime in ISO format e.g. 2026-03-10T10:00:00 (optional)
+    - attendees: New attendee email addresses, comma-separated (optional, replaces all attendees)
+    - location: New location (optional)
+    - body: New description (optional)
+    - is_online: Set to "true" or "false" to change online meeting setting (optional, leave empty to keep current)
+    """
+    update = {}
+    if subject:
+        update["subject"] = subject
+    if start:
+        update["start"] = {"dateTime": start, "timeZone": "UTC"}
+    if end:
+        update["end"] = {"dateTime": end, "timeZone": "UTC"}
+    if attendees:
+        update["attendees"] = [
+            {"emailAddress": {"address": email.strip()}, "type": "required"}
+            for email in attendees.split(",") if email.strip()
+        ]
+    if location:
+        update["location"] = {"displayName": location}
+    if body:
+        update["body"] = {"contentType": "Text", "content": body}
+    if is_online.lower() == "true":
+        update["isOnlineMeeting"] = True
+        update["onlineMeetingProvider"] = "teamsForBusiness"
+    elif is_online.lower() == "false":
+        update["isOnlineMeeting"] = False
+
+    if not update:
+        return "No fields to update. Provide at least one field to change."
+
+    data = graph_patch(f"/me/events/{event_id}", update)
+    updated_subject = data.get("subject", subject or "(unchanged)")
+    result = f"Event updated: {updated_subject}\n- ID: {event_id}"
+    if start or end:
+        s = data.get("start", {}).get("dateTime", start)[:16] if start else ""
+        e = data.get("end", {}).get("dateTime", end)[:16] if end else ""
+        if s and e:
+            result += f"\n- Time: {s} ~ {e}"
+        elif s:
+            result += f"\n- Start: {s}"
+        elif e:
+            result += f"\n- End: {e}"
+    if attendees:
+        result += f"\n- Attendees: {attendees}"
+    if location:
+        result += f"\n- Location: {location}"
+    return result
+
+@mcp.tool()
+def delete_calendar_event(event_id: str) -> str:
+    """
+    Delete a calendar event.
+    IMPORTANT: Always show the event details to the user and get explicit confirmation before calling this tool.
+    - event_id: Event ID (from list_calendar_events)
+    """
+    graph_delete(f"/me/events/{event_id}")
+    return f"Event deleted successfully.\n- ID: {event_id}"
+
+@mcp.tool()
+def create_recurring_event(
+    subject: str,
+    start_time: str,
+    end_time: str,
+    recurrence_type: str,
+    range_start: str,
+    range_end: str = "",
+    days_of_week: str = "",
+    interval: int = 1,
+    attendees: str = "",
+    location: str = "",
+    body: str = "",
+    is_online: bool = False,
+    occurrences: int = 0,
+) -> str:
+    """
+    Create a recurring calendar event.
+    IMPORTANT: Always show the event details to the user and get explicit confirmation before calling this tool.
+    - subject: Event subject/title
+    - start_time: Event start time in HH:MM format (e.g. 09:00)
+    - end_time: Event end time in HH:MM format (e.g. 10:00)
+    - recurrence_type: One of "daily", "weekly", "absoluteMonthly", "relativeMonthly", "absoluteYearly"
+    - range_start: Recurrence start date in YYYY-MM-DD format (e.g. 2026-03-10)
+    - range_end: Recurrence end date in YYYY-MM-DD (optional, use this or occurrences)
+    - days_of_week: For weekly recurrence, comma-separated days e.g. "monday,wednesday,friday"
+    - interval: Recurrence interval (e.g. 2 = every 2 weeks/days/months, default 1)
+    - attendees: Attendee email addresses, comma-separated (optional)
+    - location: Event location (optional)
+    - body: Event description (optional)
+    - is_online: Create as Teams online meeting (default: False)
+    - occurrences: Number of occurrences (optional, use this or range_end)
+    """
+    pattern = {
+        "type": recurrence_type,
+        "interval": interval,
+    }
+    if days_of_week and recurrence_type == "weekly":
+        pattern["daysOfWeek"] = [d.strip().lower() for d in days_of_week.split(",") if d.strip()]
+
+    rec_range = {"startDate": range_start}
+    if range_end:
+        rec_range["type"] = "endDate"
+        rec_range["endDate"] = range_end
+    elif occurrences > 0:
+        rec_range["type"] = "numbered"
+        rec_range["numberOfOccurrences"] = occurrences
+    else:
+        rec_range["type"] = "noEnd"
+
+    event = {
+        "subject": subject,
+        "start": {"dateTime": f"{range_start}T{start_time}:00", "timeZone": "UTC"},
+        "end": {"dateTime": f"{range_start}T{end_time}:00", "timeZone": "UTC"},
+        "recurrence": {
+            "pattern": pattern,
+            "range": rec_range,
+        },
+    }
+    if attendees:
+        event["attendees"] = [
+            {"emailAddress": {"address": email.strip()}, "type": "required"}
+            for email in attendees.split(",") if email.strip()
+        ]
+    if location:
+        event["location"] = {"displayName": location}
+    if body:
+        event["body"] = {"contentType": "Text", "content": body}
+    if is_online:
+        event["isOnlineMeeting"] = True
+        event["onlineMeetingProvider"] = "teamsForBusiness"
+
+    data = graph_post("/me/events", event)
+    rec_desc = f"{recurrence_type} (every {interval})" if interval > 1 else recurrence_type
+    if days_of_week:
+        rec_desc += f" on {days_of_week}"
+    result = (
+        f"Recurring event created: {subject}\n"
+        f"- ID: {data.get('id', '')}\n"
+        f"- Time: {start_time} ~ {end_time}\n"
+        f"- Recurrence: {rec_desc}\n"
+        f"- Range: {range_start}"
+    )
+    if range_end:
+        result += f" to {range_end}"
+    elif occurrences > 0:
+        result += f" ({occurrences} occurrences)"
+    else:
+        result += " (no end)"
+    if attendees:
+        result += f"\n- Attendees: {attendees}"
+    return result
+
+@mcp.tool()
+def create_reminder(
+    subject: str,
+    remind_at: str,
+    body: str = "",
+) -> str:
+    """
+    Create a reminder as a short calendar event with an alert.
+    IMPORTANT: Always show the reminder details to the user and get explicit confirmation before calling this tool.
+    - subject: Reminder subject/title
+    - remind_at: Reminder datetime in ISO format (e.g. 2026-03-10T14:00:00)
+    - body: Reminder note/description (optional)
+    """
+    # Parse remind_at to create a 15-minute event
+    try:
+        dt = datetime.fromisoformat(remind_at)
+    except ValueError:
+        return "Invalid datetime format. Use ISO format e.g. 2026-03-10T14:00:00"
+    end_dt = dt + timedelta(minutes=15)
+    event = {
+        "subject": f"[Reminder] {subject}",
+        "start": {"dateTime": remind_at, "timeZone": "UTC"},
+        "end": {"dateTime": end_dt.isoformat(), "timeZone": "UTC"},
+        "isReminderOn": True,
+        "reminderMinutesBeforeStart": 0,
+        "showAs": "free",
+    }
+    if body:
+        event["body"] = {"contentType": "Text", "content": body}
+
+    data = graph_post("/me/events", event)
+    return (
+        f"Reminder created: {subject}\n"
+        f"- ID: {data.get('id', '')}\n"
+        f"- Time: {remind_at}\n"
+        f"- Status: Will alert at the specified time"
+    )
 
 # ═══════════════════════════════════════════
 # Teams Files (SharePoint-based)
