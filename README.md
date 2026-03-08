@@ -281,16 +281,71 @@ All list tools support `top`, `skip`, and `next_link` parameters for pagination.
 
 ### Example Prompts
 
+**Teams — Channels**
 ```
 > Show my Teams list
+> Show channels in the "Engineering" team
 > Show the last 10 messages in the "General" channel of "Project A" team
+> Send "Build completed successfully" to the #releases channel
+> Reply to the latest message in #general with "Thanks for the update!"
+```
+
+**Teams — Chats**
+```
+> Show my recent chats
+> Show messages from my chat with Sarah
+> Send "Are you available for a quick call?" to my chat with David
+> Create a group chat with john@example.com and jane@example.com about "Q2 Planning"
+```
+
+**Outlook — Email**
+```
 > Check my inbox for today's emails
-> Search emails for "meeting notes"
-> Send an email to john@example.com about the project update
+> Show my unread emails
+> Read the latest email from my manager
+> Search emails for "quarterly report" from last week
+> Send an email to john@example.com with subject "Project Update" and summarize today's progress
+> Reply to the latest email from Sarah saying "I'll review it by EOD"
+> Forward the budget email to the finance team at finance@example.com
+> Show my mail folders
+```
+
+**Calendar**
+```
 > Show my calendar for this week
-> Create a weekly recurring meeting every Monday at 10am
-> Remind me about the report at 3pm tomorrow
+> What meetings do I have tomorrow?
+> Create a meeting with david@example.com tomorrow at 2pm for 1 hour about "Design Review"
+> Schedule a Teams online meeting with the frontend team next Monday 10am-11am
+> Create a weekly recurring standup every weekday at 9:30am starting next Monday
+> Set up a monthly team sync on the first Tuesday of each month
+> Remind me about the report deadline at 3pm tomorrow
+> Move my 2pm meeting to 4pm
+> Cancel the design review meeting on Friday
+```
+
+**Files**
+```
+> Show files in the "General" channel of "Project A" team
+> Read the project-plan.xlsx file from the Documents channel
+> Build an index of all my accessible files
+> Search my file index for "budget"
+```
+
+**People & Utilities**
+```
 > Search for a user named "Kim" in the organization
+> Find the email address of someone in the marketing team
+> Summarize my unread emails and chat messages
+> Check if there's a newer version of the MCP server
+```
+
+**Combined Workflows**
+```
+> Check my unread messages and emails, then give me a morning briefing
+> Find all emails about "Project X", summarize them, and send a status update to the team channel
+> Look at my calendar for next week and find a free slot for a 1-hour meeting
+> Read the latest messages in #engineering and reply with a summary of today's deploy
+> Search for "budget" in my emails and files, then compile the key numbers
 ```
 
 ## Troubleshooting
