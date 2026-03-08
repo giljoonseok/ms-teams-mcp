@@ -6,10 +6,10 @@ Use natural language in Claude Code, VS Code, Claude Desktop, or any MCP client 
 
 ## Features
 
-- **Teams** — List teams/channels, read/send channel messages, read/send 1:1 & group chat messages
-- **Outlook** — List emails, read email body, search emails, list mail folders
+- **Teams** — List teams/channels, read/send channel messages, create/read/send 1:1 & group chats
+- **Outlook** — List/read/search/send/reply/forward emails, list mail folders
 - **SharePoint** — List channel files, read file contents (text/xlsx)
-- **Auth Management** — Check auth status and authenticate via Device Code Flow directly from MCP
+- **Auth** — Check auth status, authenticate via Device Code Flow directly from MCP
 
 ## Prerequisites
 
@@ -23,8 +23,9 @@ Use natural language in Claude Code, VS Code, Claude Desktop, or any MCP client 
 |------------|---------|
 | `User.Read` | User profile |
 | `Mail.Read` | Read emails |
+| `Mail.Send` | Send, reply, forward emails |
 | `Chat.Read` | Read chats |
-| `Chat.ReadWrite` | Send chat messages |
+| `Chat.ReadWrite` | Send chat messages, create chats |
 | `Channel.ReadBasic.All` | List channels |
 | `ChannelMessage.Read.All` | Read channel messages |
 | `ChannelMessage.Send` | Send channel messages |
@@ -35,40 +36,34 @@ Use natural language in Claude Code, VS Code, Claude Desktop, or any MCP client 
 
 ### 2. Note Your Credentials
 
-You will need these three values when registering the MCP server:
+You will need these three values:
 
 - `MS_CLIENT_ID` — Application (client) ID
 - `MS_CLIENT_SECRET` — Client secret value
 - `MS_TENANT_ID` — Directory (tenant) ID
 
-### 3. Install uv (if not installed)
+### 3. Install uv
 
-This project uses [`uvx`](https://docs.astral.sh/uv/) to run the MCP server. Install `uv` first:
-
-```powershell
-# Windows (PowerShell) — 공식 설치 스크립트
-powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-```
+This project uses [`uvx`](https://docs.astral.sh/uv/) to run the MCP server:
 
 ```bash
 # macOS / Linux
 curl -LsSf https://astral.sh/uv/install.sh | sh
+
+# Windows (PowerShell)
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 ```
 
-설치 후 터미널을 재시작하고, 아래 명령어로 확인:
-
-```bash
-uvx --version
-```
+Restart your terminal, then verify: `uvx --version`
 
 ## Installation & Usage
 
-### Register with Claude Code (uvx — Recommended)
+### Claude Code (Recommended)
 
 No pre-installation needed — `uvx` automatically downloads and runs the package.
 
 ```bash
-# 1. Authenticate (one-time — credentials are passed as CLI args)
+# 1. Authenticate (one-time)
 uvx --from git+https://github.com/giljoonseok/ms-teams-mcp.git \
   ms-teams-mcp auth \
   --client-id <your-client-id> \
@@ -84,13 +79,9 @@ claude mcp add microsoft-teams \
   -- uvx --from git+https://github.com/giljoonseok/ms-teams-mcp.git ms-teams-mcp
 ```
 
-### VS Code (Windows / macOS / Linux)
+### VS Code
 
-VS Code supports MCP servers via the built-in Copilot or Claude extension.
-
-#### Option A: Workspace config (`.vscode/mcp.json`)
-
-Create `.vscode/mcp.json` in your project root:
+Add to `.vscode/mcp.json` in your project root:
 
 ```json
 {
@@ -112,55 +103,13 @@ Create `.vscode/mcp.json` in your project root:
 }
 ```
 
-#### Option B: User settings (`settings.json`)
+Or add the same config under `"mcp"` key in your user `settings.json` for global access.
 
-Open VS Code Settings (JSON) and add:
-
-```json
-{
-  "mcp": {
-    "servers": {
-      "microsoft-teams": {
-        "command": "uvx",
-        "args": [
-          "--from",
-          "git+https://github.com/giljoonseok/ms-teams-mcp.git",
-          "ms-teams-mcp"
-        ],
-        "env": {
-          "MS_CLIENT_ID": "<your-client-id>",
-          "MS_CLIENT_SECRET": "<your-client-secret>",
-          "MS_TENANT_ID": "<your-tenant-id>"
-        }
-      }
-    }
-  }
-}
-```
-
-> **Windows note**: If `uvx` is not found, try `uvx.cmd` as the command, or use the full path (e.g., `C:\\Users\\<you>\\AppData\\Roaming\\uv\\uvx.cmd`).
-
-#### Authenticate before first use
-
-```bash
-# Windows (PowerShell)
-uvx --from "git+https://github.com/giljoonseok/ms-teams-mcp.git" `
-  ms-teams-mcp auth `
-  --client-id <your-client-id> `
-  --client-secret <your-client-secret> `
-  --tenant-id <your-tenant-id>
-
-# macOS / Linux
-uvx --from git+https://github.com/giljoonseok/ms-teams-mcp.git \
-  ms-teams-mcp auth \
-  --client-id <your-client-id> \
-  --client-secret <your-client-secret> \
-  --tenant-id <your-tenant-id>
-```
+> **Windows**: If `uvx` is not found, use `uvx.cmd` or the full path (e.g., `C:\Users\<you>\AppData\Roaming\uv\uvx.cmd`).
 
 ### Claude Desktop
 
-Add to your Claude Desktop config file:
+Add to your config file:
 
 - **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
 - **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
@@ -185,19 +134,16 @@ Add to your Claude Desktop config file:
 }
 ```
 
-### Install via pip
+### pip Install
 
 ```bash
-# Install from Git
 pip install git+https://github.com/giljoonseok/ms-teams-mcp.git
 
-# Authenticate
 ms-teams-mcp auth \
   --client-id <your-client-id> \
   --client-secret <your-client-secret> \
   --tenant-id <your-tenant-id>
 
-# Register with Claude Code
 claude mcp add microsoft-teams ms-teams-mcp \
   -s user \
   -e MS_CLIENT_ID=<your-client-id> \
@@ -205,25 +151,28 @@ claude mcp add microsoft-teams ms-teams-mcp \
   -e MS_TENANT_ID=<your-tenant-id>
 ```
 
-### Development Setup
+### Authentication
+
+All installation methods require a one-time Device Code Flow authentication:
 
 ```bash
-git clone https://github.com/giljoonseok/ms-teams-mcp.git
-cd microsoft-teams-mcp
-pip install -e .
+uvx --from git+https://github.com/giljoonseok/ms-teams-mcp.git \
+  ms-teams-mcp auth \
+  --client-id <your-client-id> \
+  --client-secret <your-client-secret> \
+  --tenant-id <your-tenant-id>
 ```
+
+You can also authenticate from within any MCP client by calling the `authenticate` tool.
 
 ### Upgrade
 
 ```bash
-# uvx (Claude Code / VS Code / Claude Desktop) — 캐시 초기화 후 다음 실행 시 자동 최신 다운로드
+# uvx — clear cache, auto-downloads latest on next run
 uv cache clean
 
-# pip install from git — 강제 재설치
+# pip — force reinstall
 pip install --upgrade --force-reinstall git+https://github.com/giljoonseok/ms-teams-mcp.git
-
-# Development setup — 최신 코드 pull 후 재설치
-git pull && pip install -e .
 ```
 
 ### Verify & Remove
@@ -233,37 +182,41 @@ claude mcp list                       # List registered MCP servers
 claude mcp remove microsoft-teams     # Remove server
 ```
 
-### Example Prompts
+## Available MCP Tools
 
-Once registered, use natural language in your MCP client:
+| Category | Tool | Description |
+|----------|------|-------------|
+| **Auth** | `auth_status` | Check authentication status and token validity |
+| | `authenticate` | Authenticate via Device Code Flow |
+| **Teams** | `list_teams` | List joined teams |
+| | `list_channels` | List channels in a team |
+| | `list_channel_messages` | Read channel messages (max 50) |
+| | `send_channel_message` | Send a message to a channel |
+| **Chats** | `list_chats` | List 1:1 and group chats (max 50) |
+| | `list_chat_messages` | Read chat messages (max 50) |
+| | `send_chat_message` | Send a chat message |
+| | `create_chat` | Create a new 1:1 or group chat |
+| **Outlook** | `list_emails` | List emails (max 1000) |
+| | `read_email` | Read full email body |
+| | `search_emails` | Search emails (max 1000) |
+| | `send_email` | Send an email |
+| | `reply_email` | Reply or reply-all to an email |
+| | `forward_email` | Forward an email |
+| | `list_mail_folders` | List mail folders |
+| **Files** | `list_channel_files` | List files in a channel (max 200) |
+| | `read_channel_file` | Read file contents (text/xlsx, 5MB limit) |
+
+All list tools support `top`, `skip`, and `next_link` parameters for pagination.
+
+### Example Prompts
 
 ```
 > Show my Teams list
 > Show the last 10 messages in the "General" channel of "Project A" team
 > Check my inbox for today's emails
 > Search emails for "meeting notes"
-> Check my auth status
+> Send an email to john@example.com about the project update
 ```
-
-## Available MCP Tools
-
-| Category | Tool | Description |
-|----------|------|-------------|
-| **Auth** | `auth_status` | Check authentication status and token validity |
-| | `authenticate` | Authenticate via Device Code Flow within MCP |
-| **Teams** | `list_teams` | List joined teams |
-| | `list_channels(team_id)` | List channels in a team |
-| | `list_channel_messages(team_id, channel_id, top, skip)` | Read channel messages (max 50) |
-| | `send_channel_message(team_id, channel_id, message)` | Send a message to a channel |
-| **Chats** | `list_chats(top, skip)` | List 1:1 and group chats (max 50) |
-| | `list_chat_messages(chat_id, top, skip)` | Read chat messages (max 50) |
-| | `send_chat_message(chat_id, message)` | Send a chat message |
-| **Outlook** | `list_emails(folder, top, skip)` | List emails (max 1000) |
-| | `read_email(message_id)` | Read full email body |
-| | `search_emails(query, top, skip)` | Search emails (max 1000) |
-| | `list_mail_folders` | List mail folders |
-| **SharePoint** | `list_channel_files(team_id, channel_id, top, skip)` | List files in a channel (max 200) |
-| | `read_channel_file(drive_id, item_id)` | Read file contents (text/xlsx, 5MB limit) |
 
 ## Project Structure
 
@@ -271,11 +224,9 @@ Once registered, use natural language in your MCP client:
 microsoft-teams-mcp/
 ├── ms_teams_mcp/
 │   ├── __init__.py    # Package init
-│   └── server.py      # MCP server
+│   └── server.py      # MCP server (single-file architecture)
 ├── pyproject.toml     # Package config & dependencies
-├── .gitignore
 ├── CLAUDE.md          # Claude Code instructions
-├── TODO.md            # Roadmap
 └── README.md
 ```
 

@@ -20,11 +20,13 @@ Package structure — source lives in `ms_teams_mcp/`:
 1. **Config & MSAL Init** — Lazy initialization: `_get_config()` reads env vars on first use (not at import). `_get_app()`/`_get_pub_app()` create MSAL apps lazily. Token cache: `~/.ms_mcp_token.json`
 2. **Auth Layer** — `get_token()` attempts silent renewal → raises error on failure. CLI `cmd_auth()` and MCP tool `authenticate()` both use Device Code Flow via `_get_pub_app()`
 3. **Graph API Helpers** — `graph_get(path, params, url)` / `graph_post(path, body)`: all Microsoft Graph calls MUST go through these two functions. `url` parameter allows direct nextLink calls.
-4. **MCP Tools (15)** — Registered via `@mcp.tool()` decorator. All tools return formatted Korean strings (not JSON)
+4. **MCP Tools (21)** — Registered via `@mcp.tool()` decorator. All tools return formatted English strings (not JSON)
 5. **CLI Entrypoint** — `main()` branches on `sys.argv`: no args → `mcp.run()`, `auth` → `_parse_auth_args()` + `cmd_auth()`, `--version` → print version
 
 ## Conventions
 
+- **English only in source code**: All comments, docstrings, and user-facing output strings must be written in English. Do not use Korean or other non-English languages in source files.
+- **User confirmation before sending**: All send/reply/forward/create tools (`send_channel_message`, `reply_to_channel_message`, `send_chat_message`, `reply_to_chat_message`, `create_chat`, `send_email`, `reply_email`, `forward_email`, `create_calendar_event`) MUST show the full content (recipients, subject, body) to the user and receive explicit confirmation before being called. Never send automatically.
 - Adding a new tool: add `@mcp.tool()` function in `ms_teams_mcp/server.py`, always use `graph_get()`/`graph_post()` for Graph API calls
 - `top` parameter limits: chats/channels/messages max 50, emails max 1000, email search max 1000, files max 200
 - Pagination: all list tools support `skip` parameter. `_pagination_footer()` appends next-page guidance when `@odata.nextLink` exists
@@ -33,7 +35,7 @@ Package structure — source lives in `ms_teams_mcp/`:
 - Windows compatibility: guard `sys.stdout`/`sys.stderr` with `is not None` check before `reconfigure()`
 - Lazy init: config and MSAL apps are created on first use, not at import — allows `auth` CLI to accept `--client-id`/`--client-secret`/`--tenant-id` args
 - Version: single source in `pyproject.toml`, read via `importlib.metadata` in `server.py`
-- Scopes: `Mail.Read`, `User.Read`, `Chat.Read`, `Chat.ReadWrite`, `Channel.ReadBasic.All`, `ChannelMessage.Read.All`, `ChannelMessage.Send`, `Team.ReadBasic.All`, `Files.Read.All`
+- Scopes: `Mail.Read`, `Mail.Send`, `User.Read`, `Chat.Read`, `Chat.ReadWrite`, `Channel.ReadBasic.All`, `ChannelMessage.Read.All`, `ChannelMessage.Send`, `Team.ReadBasic.All`, `Files.Read.All`, `People.Read`, `Calendars.ReadWrite`
 
 ## MCP Registration
 

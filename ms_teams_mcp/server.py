@@ -1,6 +1,6 @@
 """
 Microsoft Teams & Outlook MCP Server
-Microsoft Graph API를 통해 Teams 채팅/채널 및 Outlook 메일을 관리하는 MCP 서버
+MCP server for managing Teams chats/channels and Outlook mail via Microsoft Graph API
 """
 
 import sys
@@ -8,6 +8,8 @@ import os
 import re
 import json
 import io
+from collections import Counter
+from datetime import datetime, timezone, timedelta
 if sys.stdout is not None:
     sys.stdout.reconfigure(encoding="utf-8")
 if sys.stderr is not None:
@@ -20,7 +22,7 @@ from fastmcp import FastMCP
 __version__ = _pkg_version("ms-teams-mcp")
 
 # ─────────────────────────────────────────
-# 설정 (lazy 초기화 — import 시 크래시 방지)
+# Configuration (lazy init — prevents crash on import)
 # ─────────────────────────────────────────
 SCOPES = [
     "Mail.Read", "Mail.Send", "User.Read",
@@ -29,8 +31,13 @@ SCOPES = [
     "ChannelMessage.Read.All", "ChannelMessage.Send",
     "Team.ReadBasic.All",
     "Files.Read.All",
+    "People.Read",
+    "Calendars.ReadWrite",
 ]
 TOKEN_CACHE_FILE = os.path.expanduser("~/.ms_mcp_token.json")
+FILE_INDEX_PATH = os.path.expanduser("~/.ms_mcp_file_index.json")
+GITHUB_REPO = "giljoonseok/ms-teams-mcp"
+UPDATE_CHECK_CACHE = os.path.expanduser("~/.ms_mcp_update_check.json")
 
 _cache = None
 _app = None
@@ -42,8 +49,8 @@ def _get_config():
     tenant_id = os.environ.get("MS_TENANT_ID")
     if not client_id or not client_secret or not tenant_id:
         raise RuntimeError(
-            "환경변수가 설정되지 않았습니다: MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID\n"
-            "MCP 클라이언트 설정에서 env를 확인하거나, CLI 사용 시 환경변수를 설정하세요."
+            "Environment variables not set: MS_CLIENT_ID, MS_CLIENT_SECRET, MS_TENANT_ID\n"
+            "Check env in MCP client settings, or set environment variables for CLI usage."
         )
     return client_id, client_secret, tenant_id
 
@@ -51,9 +58,11 @@ def _get_cache():
     global _cache
     if _cache is None:
         _cache = msal.SerializableTokenCache()
-        if os.path.exists(TOKEN_CACHE_FILE):
+        try:
             with open(TOKEN_CACHE_FILE, "r") as f:
                 _cache.deserialize(f.read())
+        except FileNotFoundError:
+            pass
     return _cache
 
 def _get_app():
@@ -86,34 +95,31 @@ def save_cache():
             f.write(cache.serialize())
 
 # ─────────────────────────────────────────
-# 토큰 획득 (silent 갱신 → 실패 시 에러)
+# Token acquisition (silent refresh → error on failure)
 # ─────────────────────────────────────────
 def _reload_cache():
-    """디스크에서 토큰 캐시를 다시 읽어 CLI 인증 결과를 반영"""
+    """Reload token cache from disk to pick up CLI auth results"""
     cache = _get_cache()
-    if os.path.exists(TOKEN_CACHE_FILE):
+    try:
         with open(TOKEN_CACHE_FILE, "r") as f:
             cache.deserialize(f.read())
+    except FileNotFoundError:
+        pass
 
 def get_token():
     app = _get_app()
-    accounts = app.get_accounts()
-    if accounts:
-        result = app.acquire_token_silent(SCOPES, account=accounts[0])
-        if result and "access_token" in result:
-            save_cache()
-            return result["access_token"]
-    # 캐시 재로드 후 재시도 (CLI에서 인증한 경우)
-    _reload_cache()
-    accounts = app.get_accounts()
-    if accounts:
-        result = app.acquire_token_silent(SCOPES, account=accounts[0])
-        if result and "access_token" in result:
-            save_cache()
-            return result["access_token"]
+    for attempt in range(2):
+        accounts = app.get_accounts()
+        if accounts:
+            result = app.acquire_token_silent(SCOPES, account=accounts[0])
+            if result and "access_token" in result:
+                save_cache()
+                return result["access_token"]
+        if attempt == 0:
+            _reload_cache()  # Reload cache and retry (in case auth was done via CLI)
     raise Exception(
-        "인증이 필요합니다. 'ms-teams-mcp auth'로 인증하거나 "
-        "MCP에서 authenticate 도구를 호출하세요."
+        "Authentication required. Run 'ms-teams-mcp auth' or "
+        "call the authenticate tool in MCP."
     )
 
 def _headers():
@@ -121,7 +127,7 @@ def _headers():
     return {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
 
 def _check_response(res: requests.Response):
-    """Graph API 응답 상태 확인 및 사용자 친화적 에러 반환"""
+    """Check Graph API response status and return user-friendly errors"""
     if res.ok:
         return
     status = res.status_code
@@ -132,13 +138,13 @@ def _check_response(res: requests.Response):
         error_msg = res.text[:200]
 
     error_map = {
-        401: f"인증 오류 (401): 토큰이 만료되었거나 유효하지 않습니다. 재인증이 필요합니다.\n상세: {error_msg}",
-        403: f"권한 부족 (403): 이 작업에 필요한 권한이 없습니다. Azure AD 앱 권한을 확인하세요.\n상세: {error_msg}",
-        404: f"리소스를 찾을 수 없습니다 (404): 요청한 항목이 존재하지 않거나 접근 권한이 없습니다.\n상세: {error_msg}",
-        429: f"요청 한도 초과 (429): 잠시 후 다시 시도해주세요.\n상세: {error_msg}",
+        401: f"Auth error (401): Token expired or invalid. Re-authentication required.\nDetails: {error_msg}",
+        403: f"Permission denied (403): Insufficient permissions for this operation. Check Azure AD app permissions.\nDetails: {error_msg}",
+        404: f"Resource not found (404): The requested item does not exist or is inaccessible.\nDetails: {error_msg}",
+        429: f"Rate limit exceeded (429): Please try again later.\nDetails: {error_msg}",
     }
 
-    raise Exception(error_map.get(status, f"Graph API 오류 ({status}): {error_msg}"))
+    raise Exception(error_map.get(status, f"Graph API error ({status}): {error_msg}"))
 
 def graph_get(path: str, params: dict = None, url: str = None):
     if url is None:
@@ -154,77 +160,145 @@ def graph_post(path: str, body: dict):
     return res.json()
 
 def graph_post_action(path: str, body: dict):
-    """Graph API POST (202 No Content 응답용 — sendMail, reply, forward 등)"""
+    """Graph API POST for 202 No Content responses — sendMail, reply, forward, etc."""
     url = f"https://graph.microsoft.com/v1.0{path}"
     res = requests.post(url, headers=_headers(), json=body)
     _check_response(res)
 
 def _parse_recipients(addresses: str) -> list[dict]:
-    """쉼표 구분 이메일 주소를 Graph API recipients 형식으로 변환"""
+    """Convert comma-separated email addresses to Graph API recipients format"""
     return [{"emailAddress": {"address": a.strip()}} for a in addresses.split(",") if a.strip()]
 
 def _pagination_footer(data: dict, skip: int, top: int) -> str:
-    """다음 페이지 존재 시 안내 문구 반환"""
+    """Return next-page guidance when more data is available"""
     next_link = data.get("@odata.nextLink", "")
     if next_link:
         return (
-            f"\n\n--- 추가 데이터 있음 ---"
-            f"\n다음 페이지: skip={skip + top} 또는 next_link 값 사용"
+            f"\n\n--- More data available ---"
+            f"\nNext page: skip={skip + top} or use next_link value"
             f"\nnext_link: {next_link}"
         )
     return ""
 
+_RE_HTML_TAG = re.compile(r"<[^>]+>")
+_RE_MULTI_NEWLINE = re.compile(r"\n{3,}")
+
 def strip_html(html: str) -> str:
     if not html:
         return ""
-    text = re.sub(r"<[^>]+>", "", html).strip()
-    return re.sub(r"\n{3,}", "\n\n", text)
+    text = _RE_HTML_TAG.sub("", html).strip()
+    return _RE_MULTI_NEWLINE.sub("\n\n", text)
 
 # ─────────────────────────────────────────
-# MCP 서버
+# Update Check
+# ─────────────────────────────────────────
+
+def _parse_version(version_str: str) -> tuple:
+    """Parse version string like 'v0.2.0' or '0.2.0' into comparable tuple"""
+    v = version_str.lstrip("v").strip()
+    try:
+        return tuple(int(x) for x in v.split("."))
+    except (ValueError, AttributeError):
+        return (0,)
+
+def _check_for_update() -> str | None:
+    """Check GitHub for newer version. Returns message if update available, None otherwise."""
+    try:
+        # Check cache — skip if checked within 24 hours
+        if os.path.exists(UPDATE_CHECK_CACHE):
+            with open(UPDATE_CHECK_CACHE, "r") as f:
+                cache = json.load(f)
+            last_check = cache.get("last_check", "")
+            if last_check:
+                last_dt = datetime.fromisoformat(last_check)
+                now = datetime.now(timezone.utc)
+                if (now - last_dt).total_seconds() < 86400:
+                    return cache.get("message")
+
+        # Fetch latest tag from GitHub
+        resp = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/tags",
+            timeout=2,
+            params={"per_page": 1},
+        )
+        if not resp.ok:
+            return None
+
+        tags = resp.json()
+        if not tags:
+            return None
+
+        latest_tag = tags[0].get("name", "")
+        if not latest_tag:
+            return None
+
+        latest_ver = _parse_version(latest_tag)
+        current_ver = _parse_version(__version__)
+
+        message = None
+        if latest_ver > current_ver:
+            message = (
+                f"[ms-teams-mcp] Update available: {__version__} -> {latest_tag}\n"
+                f"  pip install --upgrade git+https://github.com/{GITHUB_REPO}.git"
+            )
+
+        # Save cache
+        with open(UPDATE_CHECK_CACHE, "w") as f:
+            json.dump({
+                "last_check": datetime.now(timezone.utc).isoformat(),
+                "latest_tag": latest_tag,
+                "message": message,
+            }, f)
+
+        return message
+    except Exception:
+        return None
+
+# ─────────────────────────────────────────
+# MCP Server
 # ─────────────────────────────────────────
 mcp = FastMCP("Microsoft Teams MCP")
 
 # ═══════════════════════════════════════════
-# Teams - 팀/채널
+# Teams - Teams/Channels
 # ═══════════════════════════════════════════
 
 @mcp.tool()
 def list_teams() -> str:
-    """내가 참여한 Teams 팀 목록 조회"""
-    data = graph_get("/me/joinedTeams")
+    """List Teams teams that I have joined"""
+    data = graph_get("/me/joinedTeams", params={"$select": "id,displayName,description"})
     teams = data.get("value", [])
     if not teams:
-        return "참여한 팀이 없습니다."
+        return "No teams found."
     result = []
     for t in teams:
-        result.append(f"- {t['displayName']} (설명: {t.get('description','')}) | ID: {t['id']}")
+        result.append(f"- {t['displayName']} (desc: {t.get('description','')}) | ID: {t['id']}")
     return "\n".join(result)
 
 @mcp.tool()
 def list_channels(team_id: str) -> str:
     """
-    특정 팀의 채널 목록 조회
-    - team_id: list_teams에서 확인한 팀 ID
+    List channels of a specific team
+    - team_id: Team ID from list_teams
     """
-    data = graph_get(f"/teams/{team_id}/channels")
+    data = graph_get(f"/teams/{team_id}/channels", params={"$select": "id,displayName,membershipType"})
     channels = data.get("value", [])
     if not channels:
-        return "채널이 없습니다."
+        return "No channels found."
     result = []
     for c in channels:
-        result.append(f"- #{c['displayName']} (유형: {c.get('membershipType','')}) | ID: {c['id']}")
+        result.append(f"- #{c['displayName']} (type: {c.get('membershipType','')}) | ID: {c['id']}")
     return "\n".join(result)
 
 @mcp.tool()
 def list_channel_messages(team_id: str, channel_id: str, top: int = 20, skip: int = 0, next_link: str = "") -> str:
     """
-    팀 채널의 메시지 목록 조회
-    - team_id: 팀 ID
-    - channel_id: 채널 ID
-    - top: 가져올 메시지 수 (최대 50)
-    - skip: 건너뛸 메시지 수 (페이지네이션, 기본값 0)
-    - next_link: 다음 페이지 링크 (이전 결과에서 제공, 직접 입력 불필요)
+    List messages in a team channel
+    - team_id: Team ID
+    - channel_id: Channel ID
+    - top: Number of messages to retrieve (max 50)
+    - skip: Number of messages to skip (pagination, default 0)
+    - next_link: Next page link (provided by previous result, no manual input needed)
     """
     if next_link:
         data = graph_get("", url=next_link)
@@ -239,12 +313,12 @@ def list_channel_messages(team_id: str, channel_id: str, top: int = 20, skip: in
         )
     messages = data.get("value", [])
     if not messages:
-        return "메시지가 없습니다."
+        return "No messages found."
     result = []
     for i, m in enumerate(messages, 1):
         sender_from = m.get("from") or {}
         sender_user = sender_from.get("user") or {}
-        sender = sender_user.get("displayName") or "알 수 없음"
+        sender = sender_user.get("displayName") or "Unknown"
         body = strip_html(m.get("body", {}).get("content", ""))[:200]
         created = m.get("createdDateTime", "")[:19]
         result.append(
@@ -257,26 +331,41 @@ def list_channel_messages(team_id: str, channel_id: str, top: int = 20, skip: in
 @mcp.tool()
 def send_channel_message(team_id: str, channel_id: str, message: str) -> str:
     """
-    팀 채널에 메시지 보내기
-    - team_id: 팀 ID
-    - channel_id: 채널 ID
-    - message: 보낼 메시지 내용
+    Send a message to a team channel.
+    IMPORTANT: Always show the message content to the user and get explicit confirmation before calling this tool.
+    - team_id: Team ID
+    - channel_id: Channel ID
+    - message: Message content to send
     """
     body = {"body": {"content": message}}
     data = graph_post(f"/teams/{team_id}/channels/{channel_id}/messages", body)
-    return f"메시지 전송 완료 (ID: {data.get('id', '')})"
+    return f"Message sent (ID: {data.get('id', '')})"
+
+@mcp.tool()
+def reply_to_channel_message(team_id: str, channel_id: str, message_id: str, message: str) -> str:
+    """
+    Reply to a specific message in a team channel.
+    IMPORTANT: Always show the reply content to the user and get explicit confirmation before calling this tool.
+    - team_id: Team ID
+    - channel_id: Channel ID
+    - message_id: ID of the message to reply to (from list_channel_messages)
+    - message: Reply content
+    """
+    body = {"body": {"content": message}}
+    data = graph_post(f"/teams/{team_id}/channels/{channel_id}/messages/{message_id}/replies", body)
+    return f"Reply sent (ID: {data.get('id', '')})"
 
 # ═══════════════════════════════════════════
-# Teams - 1:1/그룹 채팅
+# Teams - 1:1/Group Chats
 # ═══════════════════════════════════════════
 
 @mcp.tool()
 def list_chats(top: int = 20, skip: int = 0, next_link: str = "") -> str:
     """
-    내 1:1/그룹 채팅 목록 조회
-    - top: 가져올 채팅 수 (최대 50)
-    - skip: 건너뛸 채팅 수 (페이지네이션, 기본값 0)
-    - next_link: 다음 페이지 링크 (이전 결과에서 제공, 직접 입력 불필요)
+    List my 1:1/group chats
+    - top: Number of chats to retrieve (max 50)
+    - skip: Number of chats to skip (pagination, default 0)
+    - next_link: Next page link (provided by previous result, no manual input needed)
     """
     if next_link:
         data = graph_get("", url=next_link)
@@ -288,7 +377,7 @@ def list_chats(top: int = 20, skip: int = 0, next_link: str = "") -> str:
         data = graph_get("/me/chats", params=params)
     chats = data.get("value", [])
     if not chats:
-        return "채팅이 없습니다."
+        return "No chats found."
     result = []
     for i, c in enumerate(chats, 1):
         chat_type = c.get("chatType", "")
@@ -301,7 +390,7 @@ def list_chats(top: int = 20, skip: int = 0, next_link: str = "") -> str:
         label = topic if topic else members_str
         result.append(
             f"{i}. [{chat_type}] {label}\n"
-            f"   최근: [{preview_time}] {preview_body}\n"
+            f"   Latest: [{preview_time}] {preview_body}\n"
             f"   ID: {c['id']}"
         )
     return "\n\n".join(result) + _pagination_footer(data, skip, top)
@@ -309,11 +398,11 @@ def list_chats(top: int = 20, skip: int = 0, next_link: str = "") -> str:
 @mcp.tool()
 def list_chat_messages(chat_id: str, top: int = 20, skip: int = 0, next_link: str = "") -> str:
     """
-    특정 채팅의 메시지 목록 조회
-    - chat_id: list_chats에서 확인한 채팅 ID
-    - top: 가져올 메시지 수 (최대 50)
-    - skip: 건너뛸 메시지 수 (페이지네이션, 기본값 0)
-    - next_link: 다음 페이지 링크 (이전 결과에서 제공, 직접 입력 불필요)
+    List messages in a specific chat
+    - chat_id: Chat ID from list_chats
+    - top: Number of messages to retrieve (max 50)
+    - skip: Number of messages to skip (pagination, default 0)
+    - next_link: Next page link (provided by previous result, no manual input needed)
     """
     if next_link:
         data = graph_get("", url=next_link)
@@ -325,13 +414,13 @@ def list_chat_messages(chat_id: str, top: int = 20, skip: int = 0, next_link: st
         data = graph_get(f"/me/chats/{chat_id}/messages", params=params)
     messages = data.get("value", [])
     if not messages:
-        return "메시지가 없습니다."
+        return "No messages found."
     result = []
     for i, m in enumerate(messages, 1):
         sender = m.get("from", {})
-        sender_name = "시스템"
+        sender_name = "System"
         if sender and sender.get("user"):
-            sender_name = sender["user"].get("displayName", "알 수 없음")
+            sender_name = sender["user"].get("displayName", "Unknown")
         body = strip_html(m.get("body", {}).get("content", ""))[:300]
         created = m.get("createdDateTime", "")[:19]
         msg_type = m.get("messageType", "")
@@ -347,25 +436,49 @@ def list_chat_messages(chat_id: str, top: int = 20, skip: int = 0, next_link: st
 @mcp.tool()
 def send_chat_message(chat_id: str, message: str) -> str:
     """
-    1:1/그룹 채팅에 메시지 보내기
-    - chat_id: 채팅 ID
-    - message: 보낼 메시지 내용
+    Send a message to a 1:1/group chat.
+    IMPORTANT: Always show the message content to the user and get explicit confirmation before calling this tool.
+    - chat_id: Chat ID
+    - message: Message content to send
     """
     body = {"body": {"content": message}}
     data = graph_post(f"/me/chats/{chat_id}/messages", body)
-    return f"메시지 전송 완료 (ID: {data.get('id', '')})"
+    return f"Message sent (ID: {data.get('id', '')})"
+
+@mcp.tool()
+def reply_to_chat_message(chat_id: str, message_id: str, message: str) -> str:
+    """
+    Reply to a specific message in a 1:1/group chat.
+    IMPORTANT: Always show the reply content to the user and get explicit confirmation before calling this tool.
+    Note: If the Graph API does not support chat message replies, this will send as a regular message in the chat.
+    - chat_id: Chat ID
+    - message_id: ID of the message to reply to (from list_chat_messages)
+    - message: Reply content
+    """
+    body = {"body": {"content": message}}
+    try:
+        data = graph_post(f"/me/chats/{chat_id}/messages/{message_id}/replies", body)
+        return f"Reply sent (ID: {data.get('id', '')})"
+    except Exception as e:
+        # Fallback only for API-not-supported errors; re-raise others
+        err_str = str(e).lower()
+        if "404" in err_str or "not supported" in err_str or "not found" in err_str:
+            data = graph_post(f"/me/chats/{chat_id}/messages", body)
+            return f"Message sent as regular message (reply API not supported) (ID: {data.get('id', '')})"
+        raise
 
 @mcp.tool()
 def create_chat(members: str, message: str = "", topic: str = "") -> str:
     """
-    새 1:1 또는 그룹 채팅 생성
-    - members: 참여자 이메일 주소 (쉼표로 구분, 본인 제외)
-    - message: 첫 메시지 (선택)
-    - topic: 그룹 채팅 주제 (선택, 3명 이상일 때 권장)
+    Create a new 1:1 or group chat.
+    IMPORTANT: Always show the participants and message content to the user and get explicit confirmation before calling this tool.
+    - members: Participant email addresses (comma-separated, excluding yourself)
+    - message: First message (optional)
+    - topic: Group chat topic (optional, recommended for 3+ participants)
     """
     member_list = [m.strip() for m in members.split(",") if m.strip()]
     if not member_list:
-        return "참여자 이메일을 1개 이상 입력해주세요."
+        return "Please provide at least one participant email address."
     chat_type = "oneOnOne" if len(member_list) == 1 else "group"
     me = graph_get("/me", params={"$select": "id"})
     body = {
@@ -390,25 +503,25 @@ def create_chat(members: str, message: str = "", topic: str = "") -> str:
     data = graph_post("/chats", body)
     if message:
         graph_post(f"/chats/{data['id']}/messages", {"body": {"content": message}})
-    result = f"채팅 생성 완료\n- ID: {data.get('id', '')}\n- 유형: {chat_type}\n- 참여자: {', '.join(member_list)}"
+    result = f"Chat created\n- ID: {data.get('id', '')}\n- Type: {chat_type}\n- Participants: {', '.join(member_list)}"
     if topic and chat_type == "group":
-        result += f"\n- 주제: {topic}"
+        result += f"\n- Topic: {topic}"
     if message:
-        result += "\n- 첫 메시지 전송 완료"
+        result += "\n- First message sent"
     return result
 
 # ═══════════════════════════════════════════
-# Outlook 메일
+# Outlook Mail
 # ═══════════════════════════════════════════
 
 @mcp.tool()
 def list_emails(folder: str = "inbox", top: int = 10, skip: int = 0, next_link: str = "") -> str:
     """
-    Outlook 메일 목록 조회
+    List Outlook emails
     - folder: inbox / sentItems / drafts / deleteditems
-    - top: 가져올 메일 수 (최대 1000)
-    - skip: 건너뛸 메일 수 (페이지네이션, 기본값 0)
-    - next_link: 다음 페이지 링크 (이전 결과에서 제공, 직접 입력 불필요)
+    - top: Number of emails to retrieve (max 1000)
+    - skip: Number of emails to skip (pagination, default 0)
+    - next_link: Next page link (provided by previous result, no manual input needed)
     """
     if next_link:
         data = graph_get("", url=next_link)
@@ -424,34 +537,34 @@ def list_emails(folder: str = "inbox", top: int = 10, skip: int = 0, next_link: 
         data = graph_get(f"/me/mailFolders/{folder}/messages", params=params)
     emails = data.get("value", [])
     if not emails:
-        return "메일이 없습니다."
+        return "No emails found."
     result = []
     for i, e in enumerate(emails, 1):
         read_mark = "N" if not e.get("isRead") else " "
         sender = e.get("from", {}).get("emailAddress", {})
         result.append(
             f"{i}. [{read_mark}] [{e['receivedDateTime'][:10]}] {e['subject']}\n"
-            f"   발신: {sender.get('name','')} <{sender.get('address','')}>\n"
+            f"   From: {sender.get('name','')} <{sender.get('address','')}>\n"
             f"   ID: {e['id']}\n"
-            f"   미리보기: {e.get('bodyPreview','')[:80]}"
+            f"   Preview: {e.get('bodyPreview','')[:80]}"
         )
     return "\n\n".join(result) + _pagination_footer(data, skip, top)
 
 @mcp.tool()
 def read_email(message_id: str) -> str:
     """
-    특정 메일 전체 본문 읽기
-    - message_id: list_emails에서 확인한 ID
+    Read full body of a specific email
+    - message_id: ID from list_emails
     """
     data = graph_get(f"/me/messages/{message_id}", params={"$select": "subject,from,toRecipients,receivedDateTime,body,isRead"})
     sender = data.get("from", {}).get("emailAddress", {})
     to_list = [r["emailAddress"]["address"] for r in data.get("toRecipients", [])]
     body_text = strip_html(data.get("body", {}).get("content", ""))
     return (
-        f"제목: {data.get('subject')}\n"
-        f"발신: {sender.get('name')} <{sender.get('address')}>\n"
-        f"수신: {', '.join(to_list)}\n"
-        f"날짜: {data.get('receivedDateTime','')[:19]}\n"
+        f"Subject: {data.get('subject')}\n"
+        f"From: {sender.get('name')} <{sender.get('address')}>\n"
+        f"To: {', '.join(to_list)}\n"
+        f"Date: {data.get('receivedDateTime','')[:19]}\n"
         f"{'─'*50}\n"
         f"{body_text[:3000]}"
     )
@@ -459,11 +572,11 @@ def read_email(message_id: str) -> str:
 @mcp.tool()
 def search_emails(query: str, top: int = 10, skip: int = 0, next_link: str = "") -> str:
     """
-    메일 검색
-    - query: 검색어 (제목, 본문, 발신자 등)
-    - top: 결과 수 (최대 1000)
-    - skip: 건너뛸 결과 수 (페이지네이션, 기본값 0)
-    - next_link: 다음 페이지 링크 (이전 결과에서 제공, 직접 입력 불필요)
+    Search emails
+    - query: Search term (subject, body, sender, etc.)
+    - top: Number of results (max 1000)
+    - skip: Number of results to skip (pagination, default 0)
+    - next_link: Next page link (provided by previous result, no manual input needed)
     """
     if next_link:
         data = graph_get("", url=next_link)
@@ -479,13 +592,13 @@ def search_emails(query: str, top: int = 10, skip: int = 0, next_link: str = "")
         data = graph_get("/me/messages", params=params)
     emails = data.get("value", [])
     if not emails:
-        return f"'{query}' 검색 결과가 없습니다."
+        return f"No results found for '{query}'."
     result = []
     for i, e in enumerate(emails, 1):
         sender = e.get("from", {}).get("emailAddress", {})
         result.append(
             f"{i}. [{e['receivedDateTime'][:10]}] {e['subject']}\n"
-            f"   발신: {sender.get('name')} <{sender.get('address')}>\n"
+            f"   From: {sender.get('name')} <{sender.get('address')}>\n"
             f"   ID: {e['id']}"
         )
     return "\n\n".join(result) + _pagination_footer(data, skip, top)
@@ -493,12 +606,13 @@ def search_emails(query: str, top: int = 10, skip: int = 0, next_link: str = "")
 @mcp.tool()
 def send_email(to: str, subject: str, body: str, cc: str = "", bcc: str = "") -> str:
     """
-    메일 발송
-    - to: 수신자 이메일 (쉼표로 여러 명 가능)
-    - subject: 제목
-    - body: 본문 (텍스트)
-    - cc: 참조 (쉼표로 여러 명 가능, 선택)
-    - bcc: 숨은참조 (쉼표로 여러 명 가능, 선택)
+    Send an email.
+    IMPORTANT: Always show the recipients, subject, and body to the user and get explicit confirmation before calling this tool.
+    - to: Recipient email (comma-separated for multiple)
+    - subject: Email subject
+    - body: Email body (text)
+    - cc: CC recipients (comma-separated, optional)
+    - bcc: BCC recipients (comma-separated, optional)
     """
     message = {
         "subject": subject,
@@ -510,58 +624,165 @@ def send_email(to: str, subject: str, body: str, cc: str = "", bcc: str = "") ->
     if bcc:
         message["bccRecipients"] = _parse_recipients(bcc)
     graph_post_action("/me/sendMail", {"message": message})
-    return f"메일 발송 완료 → {to} (제목: {subject})"
+    return f"Email sent -> {to} (subject: {subject})"
 
 @mcp.tool()
 def reply_email(message_id: str, body: str, reply_all: bool = False) -> str:
     """
-    메일 답장
-    - message_id: 원본 메일 ID
-    - body: 답장 내용
-    - reply_all: True면 전체 답장 (기본값: False)
+    Reply to an email.
+    IMPORTANT: Always show the reply content to the user and get explicit confirmation before calling this tool.
+    - message_id: Original email ID
+    - body: Reply content
+    - reply_all: True for reply all (default: False)
     """
     action = "replyAll" if reply_all else "reply"
     graph_post_action(f"/me/messages/{message_id}/{action}", {"comment": body})
-    action_label = "전체 답장" if reply_all else "답장"
-    return f"메일 {action_label} 완료 (원본 ID: {message_id})"
+    action_label = "Reply all" if reply_all else "Reply"
+    return f"{action_label} sent (original ID: {message_id})"
 
 @mcp.tool()
 def forward_email(message_id: str, to: str, comment: str = "") -> str:
     """
-    메일 전달
-    - message_id: 원본 메일 ID
-    - to: 전달 대상 이메일 (쉼표로 여러 명 가능)
-    - comment: 전달 시 추가 코멘트 (선택)
+    Forward an email.
+    IMPORTANT: Always show the recipients and content to the user and get explicit confirmation before calling this tool.
+    - message_id: Original email ID
+    - to: Forward recipient email (comma-separated for multiple)
+    - comment: Additional comment when forwarding (optional)
     """
     graph_post_action(f"/me/messages/{message_id}/forward", {
         "comment": comment,
         "toRecipients": _parse_recipients(to),
     })
-    return f"메일 전달 완료 → {to} (원본 ID: {message_id})"
+    return f"Email forwarded -> {to} (original ID: {message_id})"
 
 @mcp.tool()
 def list_mail_folders() -> str:
-    """사용 가능한 메일 폴더 목록 조회"""
+    """List available mail folders"""
     data = graph_get("/me/mailFolders", params={"$select": "id,displayName,totalItemCount,unreadItemCount"})
     folders = data.get("value", [])
     result = []
     for f in folders:
-        result.append(f"{f['displayName']} (전체: {f['totalItemCount']}, 안읽음: {f['unreadItemCount']}) | ID: {f['id']}")
+        result.append(f"{f['displayName']} (total: {f['totalItemCount']}, unread: {f['unreadItemCount']}) | ID: {f['id']}")
     return "\n".join(result)
 
 # ═══════════════════════════════════════════
-# Teams 파일 (SharePoint 기반)
+# Calendar
+# ═══════════════════════════════════════════
+
+@mcp.tool()
+def list_calendar_events(start_date: str = "", end_date: str = "", top: int = 20, skip: int = 0, next_link: str = "") -> str:
+    """
+    List calendar events within a date range using calendarView.
+    - start_date: Start date in YYYY-MM-DD format (default: today)
+    - end_date: End date in YYYY-MM-DD format (default: start_date + 7 days)
+    - top: Number of events to retrieve (max 50)
+    - skip: Number of events to skip (pagination, default 0)
+    - next_link: Next page link (provided by previous result, no manual input needed)
+    """
+    if next_link:
+        data = graph_get("", url=next_link)
+    else:
+        if not start_date:
+            start_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        if not end_date:
+            start_dt = datetime.strptime(start_date, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+            end_date = (start_dt + timedelta(days=7)).strftime("%Y-%m-%d")
+        top = min(top, 50)
+        params = {
+            "startDateTime": f"{start_date}T00:00:00Z",
+            "endDateTime": f"{end_date}T23:59:59Z",
+            "$top": top,
+            "$select": "id,subject,start,end,organizer,location,attendees,isOnlineMeeting,onlineMeetingUrl",
+            "$orderby": "start/dateTime",
+        }
+        if skip > 0:
+            params["$skip"] = skip
+        data = graph_get("/me/calendarView", params=params)
+    events = data.get("value", [])
+    if not events:
+        return "No calendar events found."
+    result = []
+    for i, ev in enumerate(events, 1):
+        subject = ev.get("subject", "(No subject)")
+        start = ev.get("start", {})
+        end = ev.get("end", {})
+        start_time = start.get("dateTime", "")[:16]
+        end_time = end.get("dateTime", "")[:16]
+        tz = start.get("timeZone", "")
+        organizer = ev.get("organizer", {}).get("emailAddress", {}).get("name", "Unknown")
+        location = ev.get("location", {}).get("displayName", "")
+        attendees_count = len(ev.get("attendees", []))
+        online = "Yes" if ev.get("isOnlineMeeting") else "No"
+        line = (
+            f"{i}. {subject}\n"
+            f"   Time: {start_time} ~ {end_time} ({tz})\n"
+            f"   Organizer: {organizer}\n"
+        )
+        if location:
+            line += f"   Location: {location}\n"
+        line += (
+            f"   Attendees: {attendees_count} | Online meeting: {online}\n"
+            f"   ID: {ev['id']}"
+        )
+        result.append(line)
+    return "\n\n".join(result) + _pagination_footer(data, skip, top)
+
+@mcp.tool()
+def create_calendar_event(subject: str, start: str, end: str, attendees: str = "", location: str = "", body: str = "", is_online: bool = False) -> str:
+    """
+    Create a new calendar event.
+    IMPORTANT: Always show the event details (subject, time, attendees) to the user and get explicit confirmation before calling this tool.
+    - subject: Event subject/title
+    - start: Start datetime in ISO format (e.g. 2026-03-10T09:00:00)
+    - end: End datetime in ISO format (e.g. 2026-03-10T10:00:00)
+    - attendees: Attendee email addresses (comma-separated, optional)
+    - location: Event location (optional)
+    - body: Event description (optional)
+    - is_online: Create as Teams online meeting (default: False)
+    """
+    event = {
+        "subject": subject,
+        "start": {"dateTime": start, "timeZone": "UTC"},
+        "end": {"dateTime": end, "timeZone": "UTC"},
+    }
+    if attendees:
+        event["attendees"] = [
+            {
+                "emailAddress": {"address": email.strip()},
+                "type": "required",
+            }
+            for email in attendees.split(",") if email.strip()
+        ]
+    if location:
+        event["location"] = {"displayName": location}
+    if body:
+        event["body"] = {"contentType": "Text", "content": body}
+    if is_online:
+        event["isOnlineMeeting"] = True
+        event["onlineMeetingProvider"] = "teamsForBusiness"
+    data = graph_post("/me/events", event)
+    result = f"Event created: {subject}\n- ID: {data.get('id', '')}\n- Time: {start} ~ {end}"
+    if attendees:
+        result += f"\n- Attendees: {attendees}"
+    if is_online:
+        meeting_url = data.get("onlineMeeting", {}).get("joinUrl", "")
+        if meeting_url:
+            result += f"\n- Teams meeting URL: {meeting_url}"
+    return result
+
+# ═══════════════════════════════════════════
+# Teams Files (SharePoint-based)
 # ═══════════════════════════════════════════
 
 @mcp.tool()
 def list_channel_files(team_id: str, channel_id: str, top: int = 50, skip: int = 0, next_link: str = "") -> str:
     """
-    팀 채널에 업로드된 파일 목록 조회
-    - team_id: 팀 ID
-    - channel_id: 채널 ID
-    - top: 가져올 파일 수 (최대 200)
-    - skip: 건너뛸 파일 수 (페이지네이션, 기본값 0)
-    - next_link: 다음 페이지 링크 (이전 결과에서 제공, 직접 입력 불필요)
+    List files uploaded to a team channel
+    - team_id: Team ID
+    - channel_id: Channel ID
+    - top: Number of files to retrieve (max 200)
+    - skip: Number of files to skip (pagination, default 0)
+    - next_link: Next page link (provided by previous result, no manual input needed)
     """
     if next_link:
         items = graph_get("", url=next_link)
@@ -571,7 +792,7 @@ def list_channel_files(team_id: str, channel_id: str, top: int = 50, skip: int =
         drive_id = data.get("parentReference", {}).get("driveId", "")
         folder_id = data.get("id", "")
         if not drive_id or not folder_id:
-            return "파일 폴더 정보를 가져올 수 없습니다."
+            return "Unable to retrieve file folder information."
         top = min(top, 200)
         params = {
             "$select": "id,name,size,lastModifiedDateTime,webUrl,file,folder",
@@ -582,18 +803,18 @@ def list_channel_files(team_id: str, channel_id: str, top: int = 50, skip: int =
         items = graph_get(f"/drives/{drive_id}/items/{folder_id}/children", params=params)
     files = items.get("value", [])
     if not files:
-        return "파일이 없습니다."
-    # next_link 사용 시 첫 번째 파일의 parentReference에서 driveId 추출
+        return "No files found."
+    # Extract driveId from first file's parentReference when using next_link
     if not drive_id and files:
         drive_id = files[0].get("parentReference", {}).get("driveId", "")
     result = []
     for i, f in enumerate(files, 1):
-        ftype = "📁 폴더" if "folder" in f else "📄 파일"
+        ftype = "Folder" if "folder" in f else "File"
         size = f.get("size", 0)
         size_str = f"{size / 1024 / 1024:.1f}MB" if size > 1024 * 1024 else f"{size / 1024:.1f}KB"
         result.append(
-            f"{i}. {ftype} {f['name']} ({size_str})\n"
-            f"   수정: {f.get('lastModifiedDateTime', '')[:19]}\n"
+            f"{i}. [{ftype}] {f['name']} ({size_str})\n"
+            f"   Modified: {f.get('lastModifiedDateTime', '')[:19]}\n"
             f"   ID: {f['id']}\n"
             f"   DriveID: {drive_id}"
         )
@@ -602,33 +823,33 @@ def list_channel_files(team_id: str, channel_id: str, top: int = 50, skip: int =
 @mcp.tool()
 def read_channel_file(drive_id: str, item_id: str) -> str:
     """
-    팀 채널의 파일 내용 읽기 (텍스트 기반 파일만 가능)
-    - drive_id: list_channel_files에서 확인한 DriveID
-    - item_id: list_channel_files에서 확인한 파일 ID
+    Read file content from a team channel (text-based files only)
+    - drive_id: DriveID from list_channel_files
+    - item_id: File ID from list_channel_files
     """
-    meta = graph_get(f"/drives/{drive_id}/items/{item_id}")
+    meta = graph_get(f"/drives/{drive_id}/items/{item_id}", params={"$select": "name,size,file,@microsoft.graph.downloadUrl"})
     name = meta.get("name", "")
     size = meta.get("size", 0)
     download_url = meta.get("@microsoft.graph.downloadUrl", "")
 
     if size > 5 * 1024 * 1024:
-        return f"파일이 너무 큽니다 ({size / 1024 / 1024:.1f}MB). 5MB 이하 파일만 읽을 수 있습니다."
+        return f"File too large ({size / 1024 / 1024:.1f}MB). Only files up to 5MB can be read."
+
+    mime = meta.get("file", {}).get("mimeType", "")
+    if "image" in mime or "video" in mime or "audio" in mime:
+        return f"Binary file ({mime}). Only text files can be read."
 
     if not download_url:
-        return "다운로드 URL을 가져올 수 없습니다."
+        return "Unable to retrieve download URL."
 
     resp = requests.get(download_url)
     _check_response(resp)
 
-    mime = meta.get("file", {}).get("mimeType", "")
-    if "image" in mime or "video" in mime or "audio" in mime:
-        return f"바이너리 파일입니다 ({mime}). 텍스트 파일만 읽을 수 있습니다."
-
-    # xlsx 파일 처리
+    # Handle xlsx files
     if name.endswith(".xlsx"):
         import openpyxl
         wb = openpyxl.load_workbook(io.BytesIO(resp.content), read_only=True, data_only=True)
-        result_parts = [f"파일명: {name}"]
+        result_parts = [f"Filename: {name}"]
         for sheet_name in wb.sheetnames:
             ws = wb[sheet_name]
             rows = []
@@ -648,75 +869,416 @@ def read_channel_file(drive_id: str, item_id: str) -> str:
         try:
             content = resp.content.decode("cp949")
         except UnicodeDecodeError:
-            return "파일 인코딩을 판별할 수 없습니다. 바이너리 파일일 수 있습니다."
+            return "Unable to determine file encoding. This may be a binary file."
 
-    return f"파일명: {name}\n{'─'*50}\n{content[:5000]}"
+    return f"Filename: {name}\n{'─'*50}\n{content[:5000]}"
 
 # ═══════════════════════════════════════════
-# 인증 관리
+# File Keyword Index
+# ═══════════════════════════════════════════
+
+_STOPWORDS = frozenset({
+    "the", "and", "for", "that", "this", "with", "from", "are", "was", "were",
+    "been", "being", "have", "has", "had", "does", "did", "will", "would",
+    "could", "should", "may", "might", "shall", "can", "need", "must",
+    "not", "but", "nor", "yet", "also", "just", "than", "then", "too",
+    "very", "its", "our", "your", "his", "her", "their", "all", "any",
+    "each", "every", "both", "few", "more", "most", "other", "some",
+    "such", "only", "own", "same", "into", "over", "after", "before",
+    "between", "under", "about", "out", "off", "once", "here", "there",
+    "when", "where", "why", "how", "what", "which", "who", "whom",
+    "she", "him", "they", "them", "these", "those", "you", "new",
+    "use", "used", "using", "one", "two", "get", "set", "com", "www",
+    "http", "https", "none", "null", "true", "false", "def", "class",
+    "return", "import", "self",
+})
+
+def _extract_keywords(text: str, top_n: int = 20) -> list[str]:
+    """Extract top-N keywords from text using word frequency"""
+    words = re.findall(r'[가-힣]{2,}|[a-zA-Z]{3,}', text)
+    filtered = [w.lower() for w in words if w.lower() not in _STOPWORDS]
+    if not filtered:
+        return []
+    return [word for word, _ in Counter(filtered).most_common(top_n)]
+
+@mcp.tool()
+def build_file_index() -> str:
+    """
+    Build a keyword index of all files across all Teams channels.
+    Traverses all joined teams and their channels, reads text-based files (up to 5MB),
+    extracts keywords, and saves the index to ~/.ms_mcp_file_index.json.
+    Use search_file_index to search the built index.
+    """
+    teams_data = graph_get("/me/joinedTeams", params={"$select": "id,displayName"})
+    teams = teams_data.get("value", [])
+    if not teams:
+        return "No teams found."
+
+    indexed_files = []
+    errors = []
+    total_scanned = 0
+
+    for team in teams:
+        team_id = team["id"]
+        team_name = team["displayName"]
+        try:
+            channels_data = graph_get(f"/teams/{team_id}/channels", params={"$select": "id,displayName"})
+        except Exception as e:
+            errors.append(f"Failed to list channels for team '{team_name}': {e}")
+            continue
+
+        for channel in channels_data.get("value", []):
+            channel_id = channel["id"]
+            channel_name = channel["displayName"]
+            try:
+                folder = graph_get(f"/teams/{team_id}/channels/{channel_id}/filesFolder")
+                drive_id = folder.get("parentReference", {}).get("driveId", "")
+                folder_id = folder.get("id", "")
+                if not drive_id or not folder_id:
+                    continue
+                items = graph_get(
+                    f"/drives/{drive_id}/items/{folder_id}/children",
+                    params={"$select": "id,name,size,lastModifiedDateTime,file", "$top": 200}
+                )
+            except Exception as e:
+                errors.append(f"Failed to list files for '{team_name}/#{channel_name}': {e}")
+                continue
+
+            for item in items.get("value", []):
+                if "file" not in item:
+                    continue
+                total_scanned += 1
+                name = item.get("name", "")
+                size = item.get("size", 0)
+                item_id = item["id"]
+                mime = item.get("file", {}).get("mimeType", "")
+
+                # Skip large or binary files
+                if size > 5 * 1024 * 1024:
+                    continue
+                if any(t in mime for t in ("image", "video", "audio")):
+                    continue
+
+                try:
+                    meta = graph_get(
+                        f"/drives/{drive_id}/items/{item_id}",
+                        params={"$select": "name,@microsoft.graph.downloadUrl"}
+                    )
+                    download_url = meta.get("@microsoft.graph.downloadUrl", "")
+                    if not download_url:
+                        continue
+
+                    resp = requests.get(download_url)
+                    if not resp.ok:
+                        continue
+
+                    # Parse content
+                    if name.endswith(".xlsx"):
+                        import openpyxl
+                        wb = openpyxl.load_workbook(io.BytesIO(resp.content), read_only=True, data_only=True)
+                        parts = []
+                        for sheet_name in wb.sheetnames:
+                            ws = wb[sheet_name]
+                            for row in ws.iter_rows(values_only=True):
+                                parts.append(" ".join(str(c) for c in row if c is not None))
+                                if len(parts) > 500:
+                                    break
+                        wb.close()
+                        content = " ".join(parts)
+                    else:
+                        try:
+                            content = resp.content.decode("utf-8")
+                        except UnicodeDecodeError:
+                            try:
+                                content = resp.content.decode("cp949")
+                            except UnicodeDecodeError:
+                                continue
+
+                    keywords = _extract_keywords(content)
+                    if not keywords:
+                        continue
+
+                    indexed_files.append({
+                        "team": team_name,
+                        "channel": channel_name,
+                        "name": name,
+                        "drive_id": drive_id,
+                        "item_id": item_id,
+                        "size": size,
+                        "modified": item.get("lastModifiedDateTime", "")[:19],
+                        "keywords": keywords,
+                    })
+                except Exception as e:
+                    errors.append(f"Failed to read '{name}' in '{team_name}/#{channel_name}': {e}")
+                    continue
+
+    index = {
+        "updated_at": datetime.now(timezone.utc).isoformat(),
+        "files": indexed_files,
+    }
+    with open(FILE_INDEX_PATH, "w", encoding="utf-8") as f:
+        json.dump(index, f, ensure_ascii=False, indent=2)
+
+    result = (
+        f"File index built successfully.\n"
+        f"- Files scanned: {total_scanned}\n"
+        f"- Files indexed: {len(indexed_files)}\n"
+        f"- Index saved to: {FILE_INDEX_PATH}"
+    )
+    if errors:
+        result += f"\n- Errors: {len(errors)}"
+        for err in errors[:5]:
+            result += f"\n  * {err}"
+    return result
+
+@mcp.tool()
+def search_file_index(query: str) -> str:
+    """
+    Search the file keyword index built by build_file_index.
+    - query: Search keywords (e.g. "server IP" or "자산 관리")
+    """
+    try:
+        with open(FILE_INDEX_PATH, "r", encoding="utf-8") as f:
+            index = json.load(f)
+    except FileNotFoundError:
+        return "No file index found. Run build_file_index first to create the index."
+
+    query_words = [w.lower() for w in re.findall(r'[가-힣]{2,}|[a-zA-Z]{3,}', query)]
+    if not query_words:
+        return "Please provide valid search keywords (2+ Korean chars or 3+ English chars)."
+
+    scored = []
+    for entry in index.get("files", []):
+        keywords = [k.lower() for k in entry.get("keywords", [])]
+        name_words = [w.lower() for w in re.findall(r'[가-힣]{2,}|[a-zA-Z]{3,}', entry.get("name", ""))]
+        score = 0
+        for qw in query_words:
+            # Exact match in keywords
+            if qw in keywords:
+                score += 2
+            # Partial match in keywords
+            elif any(qw in k or k in qw for k in keywords):
+                score += 1
+            # Match in filename
+            if qw in name_words:
+                score += 3
+            elif any(qw in nw or nw in qw for nw in name_words):
+                score += 1
+        if score > 0:
+            scored.append((score, entry))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    top_results = scored[:10]
+
+    if not top_results:
+        return f"No files found matching '{query}'."
+
+    updated = index.get("updated_at", "unknown")
+    result = [f"Search results for '{query}' (index updated: {updated[:19]}):\n"]
+    for rank, (score, entry) in enumerate(top_results, 1):
+        kw_str = ", ".join(entry["keywords"][:10])
+        result.append(
+            f"{rank}. [{entry['team']}/#{entry['channel']}] {entry['name']}\n"
+            f"   Size: {entry['size'] / 1024:.1f}KB | Modified: {entry['modified']}\n"
+            f"   Keywords: {kw_str}\n"
+            f"   DriveID: {entry['drive_id']} | ItemID: {entry['item_id']}\n"
+            f"   Relevance: {score}"
+        )
+    return "\n\n".join(result)
+
+# ═══════════════════════════════════════════
+# User & Summary
 # ═══════════════════════════════════════════
 
 @mcp.tool()
+def search_users(query: str, top: int = 10, skip: int = 0, next_link: str = "") -> str:
+    """
+    Search for people in the organization.
+    - query: Search term (name, email, etc.)
+    - top: Number of results (max 50)
+    - skip: Number of results to skip (pagination, default 0)
+    - next_link: Next page link (provided by previous result, no manual input needed)
+    """
+    if next_link:
+        data = graph_get("", url=next_link)
+    else:
+        top = min(top, 50)
+        params = {"$search": f'"{query}"', "$top": top}
+        if skip > 0:
+            params["$skip"] = skip
+        data = graph_get("/me/people", params=params)
+    people = data.get("value", [])
+    if not people:
+        return f"No people found for '{query}'."
+    result = []
+    for i, p in enumerate(people, 1):
+        name = p.get("displayName", "Unknown")
+        emails = p.get("scoredEmailAddresses", [])
+        email = emails[0].get("address", "") if emails else ""
+        title = p.get("jobTitle", "")
+        dept = p.get("department", "")
+        line = f"{i}. {name}"
+        if email:
+            line += f" <{email}>"
+        if title:
+            line += f"\n   Title: {title}"
+        if dept:
+            line += f"\n   Department: {dept}"
+        result.append(line)
+    return "\n\n".join(result) + _pagination_footer(data, skip, top)
+
+@mcp.tool()
+def get_unread_summary() -> str:
+    """
+    Get a summary of unread emails and recent chat activity.
+    Shows inbox unread count and recent chat previews.
+    """
+    parts = []
+    # Unread email count
+    try:
+        inbox = graph_get("/me/mailFolders/inbox", params={"$select": "unreadItemCount,totalItemCount"})
+        unread = inbox.get("unreadItemCount", 0)
+        total = inbox.get("totalItemCount", 0)
+        parts.append(f"Inbox: {unread} unread / {total} total emails")
+    except Exception as e:
+        parts.append(f"Inbox: Failed to retrieve ({e})")
+
+    # Recent chats
+    try:
+        chats = graph_get("/me/chats", params={
+            "$top": 10,
+            "$expand": "members",
+            "$orderby": "lastMessagePreview/createdDateTime desc",
+        })
+        chat_list = chats.get("value", [])
+        if chat_list:
+            parts.append(f"\nRecent chats ({len(chat_list)}):")
+            for i, c in enumerate(chat_list, 1):
+                topic = c.get("topic") or ""
+                members = [m.get("displayName") or "" for m in c.get("members", [])]
+                members_str = ", ".join(members[:4])
+                label = topic if topic else members_str
+                preview = c.get("lastMessagePreview", {})
+                preview_body = strip_html(preview.get("body", {}).get("content", ""))[:60] if preview else ""
+                preview_time = preview.get("createdDateTime", "")[:16] if preview else ""
+                parts.append(f"  {i}. {label}\n     [{preview_time}] {preview_body}")
+        else:
+            parts.append("\nNo recent chats.")
+    except Exception as e:
+        parts.append(f"\nChats: Failed to retrieve ({e})")
+
+    return "\n".join(parts)
+
+# ═══════════════════════════════════════════
+# Auth Management
+# ═══════════════════════════════════════════
+
+@mcp.tool()
+def check_update() -> str:
+    """Check if a newer version of ms-teams-mcp is available on GitHub"""
+    try:
+        resp = requests.get(
+            f"https://api.github.com/repos/{GITHUB_REPO}/tags",
+            timeout=5,
+            params={"per_page": 1},
+        )
+        if not resp.ok:
+            return f"Failed to check for updates (HTTP {resp.status_code})."
+
+        tags = resp.json()
+        if not tags:
+            return f"Current version: {__version__}. No releases found on GitHub."
+
+        latest_tag = tags[0].get("name", "")
+        latest_ver = _parse_version(latest_tag)
+        current_ver = _parse_version(__version__)
+
+        if latest_ver > current_ver:
+            return (
+                f"Update available!\n"
+                f"  Current: {__version__}\n"
+                f"  Latest:  {latest_tag}\n"
+                f"  Run: pip install --upgrade git+https://github.com/{GITHUB_REPO}.git"
+            )
+        return f"You are up to date (version {__version__})."
+    except Exception as e:
+        return f"Failed to check for updates: {e}"
+
+@mcp.tool()
 def auth_status() -> str:
-    """현재 Microsoft 인증 상태 확인"""
+    """Check current Microsoft authentication status"""
     app = _get_app()
     accounts = app.get_accounts()
     if not accounts:
         return (
-            "인증 안됨 - 토큰이 없습니다.\n"
-            "authenticate 도구를 호출하여 Device Code Flow로 인증하세요."
+            "Not authenticated - No token found.\n"
+            "Call the authenticate tool to authenticate via Device Code Flow."
         )
     account = accounts[0]
-    username = account.get("username", "알 수 없음")
+    username = account.get("username", "Unknown")
     result = app.acquire_token_silent(SCOPES, account=account)
     if result and "access_token" in result:
         save_cache()
-        return f"인증됨 - 계정: {username}\n토큰이 유효합니다."
+        return f"Authenticated - Account: {username}\nToken is valid."
     else:
         return (
-            f"토큰 만료 - 계정: {username}\n"
-            "authenticate 도구를 호출하여 재인증하세요."
+            f"Token expired - Account: {username}\n"
+            "Call the authenticate tool to re-authenticate."
         )
 
-@mcp.tool()
-def authenticate() -> str:
-    """
-    Device Code Flow로 Microsoft 인증 수행.
-    반환되는 URL에 접속하여 코드를 입력하면 인증이 완료됩니다.
-    """
+def _device_code_auth(on_flow_started=None):
+    """Device Code Flow common logic. Returns (status, username) on success, raises on failure."""
+    # 1. Try silent token refresh
     app = _get_app()
     accounts = app.get_accounts()
     if accounts:
         result = app.acquire_token_silent(SCOPES, account=accounts[0], force_refresh=True)
         if result and "access_token" in result:
             save_cache()
-            return f"이미 유효한 토큰이 있습니다. 계정: {accounts[0]['username']}"
+            return ("refreshed", accounts[0]["username"])
 
+    # 2. Start Device Code Flow
     pub_app = _get_pub_app()
     flow = pub_app.initiate_device_flow(scopes=SCOPES)
     if "user_code" not in flow:
-        return f"Device Code Flow 시작 실패: {flow.get('error_description', flow)}"
+        raise RuntimeError(f"Failed to start Device Code Flow: {flow.get('error_description', flow)}")
 
-    print(f"[MCP authenticate] 접속: {flow['verification_uri']} / 코드: {flow['user_code']}", flush=True)
+    if on_flow_started:
+        on_flow_started(flow)
 
+    # 3. Acquire token
     result = pub_app.acquire_token_by_device_flow(flow)
     if "access_token" in result:
         save_cache()
-        account = result.get("id_token_claims", {})
-        return (
-            f"인증 완료!\n"
-            f"계정: {account.get('preferred_username', '확인불가')}\n"
-            f"토큰 저장 위치: {TOKEN_CACHE_FILE}"
-        )
+        username = result.get("id_token_claims", {}).get("preferred_username", "Unknown")
+        return ("authenticated", username)
     else:
-        return f"인증 실패: {result.get('error_description', result)}"
+        raise RuntimeError(f"Authentication failed: {result.get('error_description', result)}")
+
+@mcp.tool()
+def authenticate() -> str:
+    """
+    Authenticate via Device Code Flow.
+    Visit the returned URL and enter the code to complete authentication.
+    """
+    def on_flow(flow):
+        print(f"[MCP authenticate] Visit: {flow['verification_uri']} / Code: {flow['user_code']}", flush=True)
+
+    try:
+        status, username = _device_code_auth(on_flow_started=on_flow)
+    except RuntimeError as e:
+        return str(e)
+
+    if status == "refreshed":
+        return f"Token already valid. Account: {username}"
+    return f"Authentication complete!\nAccount: {username}\nToken saved to: {TOKEN_CACHE_FILE}"
 
 # ─────────────────────────────────────────
-# CLI: 인증 서브커맨드
+# CLI: Auth subcommand
 # ─────────────────────────────────────────
 
 def _parse_auth_args(args):
-    """auth 서브커맨드의 --client-id, --client-secret, --tenant-id 파싱"""
+    """Parse --client-id, --client-secret, --tenant-id for auth subcommand"""
     i = 0
     while i < len(args):
         if args[i] == "--client-id" and i + 1 < len(args):
@@ -732,40 +1294,28 @@ def _parse_auth_args(args):
             i += 1
 
 def cmd_auth():
-    """Device Code Flow로 토큰 발급 (headless 서버용)"""
-    app = _get_app()
-    accounts = app.get_accounts()
-    if accounts:
-        result = app.acquire_token_silent(SCOPES, account=accounts[0], force_refresh=True)
-        if result and "access_token" in result:
-            save_cache()
-            print(f"기존 토큰 갱신 성공! 계정: {accounts[0]['username']}")
-            return
+    """Issue token via Device Code Flow (for headless servers)"""
+    def on_flow(flow):
+        print("=" * 60, file=sys.stderr, flush=True)
+        print("  Microsoft Token Issuance (Device Code Flow)", file=sys.stderr, flush=True)
+        print("=" * 60, file=sys.stderr, flush=True)
+        print(f"\n  1. Visit on any device: {flow['verification_uri']}", file=sys.stderr, flush=True)
+        print(f"  2. Enter code: {flow['user_code']}", file=sys.stderr, flush=True)
+        print(f"\n  Expires in: {flow.get('expires_in', 900)} seconds", file=sys.stderr, flush=True)
+        print("=" * 60, file=sys.stderr, flush=True)
+        print("\nWaiting for authentication...", file=sys.stderr, flush=True)
 
-    pub_app = _get_pub_app()
-    flow = pub_app.initiate_device_flow(scopes=SCOPES)
-    if "user_code" not in flow:
-        print(f"Device Code Flow 시작 실패: {flow.get('error_description', flow)}")
+    try:
+        status, username = _device_code_auth(on_flow_started=on_flow)
+    except RuntimeError as e:
+        print(str(e))
         sys.exit(1)
 
-    print("=" * 60, file=sys.stderr, flush=True)
-    print("  Microsoft 토큰 발급 (Device Code Flow)", file=sys.stderr, flush=True)
-    print("=" * 60, file=sys.stderr, flush=True)
-    print(f"\n  1. 아무 기기에서 접속: {flow['verification_uri']}", file=sys.stderr, flush=True)
-    print(f"  2. 코드 입력: {flow['user_code']}", file=sys.stderr, flush=True)
-    print(f"\n  만료: {flow.get('expires_in', 900)}초 이내에 완료하세요", file=sys.stderr, flush=True)
-    print("=" * 60, file=sys.stderr, flush=True)
-    print("\n인증 대기 중...", file=sys.stderr, flush=True)
-
-    result = pub_app.acquire_token_by_device_flow(flow)
-    if "access_token" in result:
-        save_cache()
-        account = result.get("id_token_claims", {})
-        print(f"\n토큰 저장 완료! 계정: {account.get('preferred_username', '확인불가')}")
-        print(f"저장 위치: {TOKEN_CACHE_FILE}")
+    if status == "refreshed":
+        print(f"Token refreshed successfully! Account: {username}")
     else:
-        print(f"\n토큰 획득 실패: {result.get('error_description', result)}")
-        sys.exit(1)
+        print(f"\nToken saved! Account: {username}")
+        print(f"Location: {TOKEN_CACHE_FILE}")
 
 def main():
     if len(sys.argv) > 1:
@@ -776,17 +1326,20 @@ def main():
         elif command in ("--version", "-v", "version"):
             print(f"ms-teams-mcp {__version__}")
         else:
-            print("사용법:")
-            print("  ms-teams-mcp                    # MCP 서버 실행")
-            print("  ms-teams-mcp auth               # Device Code Flow 인증")
+            print("Usage:")
+            print("  ms-teams-mcp                    # Run MCP server")
+            print("  ms-teams-mcp auth               # Device Code Flow auth")
             print("  ms-teams-mcp auth \\")
             print("    --client-id <ID> \\")
             print("    --client-secret <SECRET> \\")
-            print("    --tenant-id <TENANT>                 # CLI 인자로 인증")
-            print("  ms-teams-mcp --version           # 버전 확인")
+            print("    --tenant-id <TENANT>                 # Auth with CLI args")
+            print("  ms-teams-mcp --version           # Show version")
             sys.exit(1)
     else:
-        print("Microsoft Teams MCP 서버 시작 중...")
+        update_msg = _check_for_update()
+        if update_msg and sys.stderr is not None:
+            print(update_msg, file=sys.stderr, flush=True)
+        print("Starting Microsoft Teams MCP server...")
         mcp.run()
 
 if __name__ == "__main__":
