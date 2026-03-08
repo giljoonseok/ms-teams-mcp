@@ -182,6 +182,13 @@ def _parse_recipients(addresses: str) -> list[dict]:
     """Convert comma-separated email addresses to Graph API recipients format"""
     return [{"emailAddress": {"address": a.strip()}} for a in addresses.split(",") if a.strip()]
 
+def _parse_attendees(addresses: str) -> list[dict]:
+    """Convert comma-separated email addresses to Graph API attendees format"""
+    return [
+        {"emailAddress": {"address": a.strip()}, "type": "required"}
+        for a in addresses.split(",") if a.strip()
+    ]
+
 def _pagination_footer(data: dict, skip: int, top: int) -> str:
     """Return next-page guidance when more data is available"""
     next_link = data.get("@odata.nextLink", "")
@@ -759,13 +766,7 @@ def create_calendar_event(subject: str, start: str, end: str, attendees: str = "
         "end": {"dateTime": end, "timeZone": "UTC"},
     }
     if attendees:
-        event["attendees"] = [
-            {
-                "emailAddress": {"address": email.strip()},
-                "type": "required",
-            }
-            for email in attendees.split(",") if email.strip()
-        ]
+        event["attendees"] = _parse_attendees(attendees)
     if location:
         event["location"] = {"displayName": location}
     if body:
@@ -814,10 +815,7 @@ def update_calendar_event(
     if end:
         update["end"] = {"dateTime": end, "timeZone": "UTC"}
     if attendees:
-        update["attendees"] = [
-            {"emailAddress": {"address": email.strip()}, "type": "required"}
-            for email in attendees.split(",") if email.strip()
-        ]
+        update["attendees"] = _parse_attendees(attendees)
     if location:
         update["location"] = {"displayName": location}
     if body:
@@ -834,15 +832,10 @@ def update_calendar_event(
     data = graph_patch(f"/me/events/{event_id}", update)
     updated_subject = data.get("subject", subject or "(unchanged)")
     result = f"Event updated: {updated_subject}\n- ID: {event_id}"
-    if start or end:
-        s = data.get("start", {}).get("dateTime", start)[:16] if start else ""
-        e = data.get("end", {}).get("dateTime", end)[:16] if end else ""
-        if s and e:
-            result += f"\n- Time: {s} ~ {e}"
-        elif s:
-            result += f"\n- Start: {s}"
-        elif e:
-            result += f"\n- End: {e}"
+    if start:
+        result += f"\n- Start: {data.get('start', {}).get('dateTime', '')[:16]}"
+    if end:
+        result += f"\n- End: {data.get('end', {}).get('dateTime', '')[:16]}"
     if attendees:
         result += f"\n- Attendees: {attendees}"
     if location:
@@ -919,10 +912,7 @@ def create_recurring_event(
         },
     }
     if attendees:
-        event["attendees"] = [
-            {"emailAddress": {"address": email.strip()}, "type": "required"}
-            for email in attendees.split(",") if email.strip()
-        ]
+        event["attendees"] = _parse_attendees(attendees)
     if location:
         event["location"] = {"displayName": location}
     if body:
@@ -965,12 +955,10 @@ def create_reminder(
     - remind_at: Reminder datetime in ISO format (e.g. 2026-03-10T14:00:00)
     - body: Reminder note/description (optional)
     """
-    # Parse remind_at to create a 15-minute event
     try:
-        dt = datetime.fromisoformat(remind_at)
+        end_dt = datetime.fromisoformat(remind_at) + timedelta(minutes=15)
     except ValueError:
         return "Invalid datetime format. Use ISO format e.g. 2026-03-10T14:00:00"
-    end_dt = dt + timedelta(minutes=15)
     event = {
         "subject": f"[Reminder] {subject}",
         "start": {"dateTime": remind_at, "timeZone": "UTC"},
