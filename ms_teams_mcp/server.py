@@ -58,11 +58,15 @@ def _get_cache():
     global _cache
     if _cache is None:
         _cache = msal.SerializableTokenCache()
-        try:
-            with open(TOKEN_CACHE_FILE, "r") as f:
-                _cache.deserialize(f.read())
-        except FileNotFoundError:
-            pass
+        cache_data = os.environ.get("MS_TOKEN_CACHE_DATA")
+        if cache_data:
+            _cache.deserialize(cache_data)
+        else:
+            try:
+                with open(TOKEN_CACHE_FILE, "r") as f:
+                    _cache.deserialize(f.read())
+            except FileNotFoundError:
+                pass
     return _cache
 
 def _get_app():
@@ -91,6 +95,8 @@ def _get_pub_app():
 def save_cache():
     cache = _get_cache()
     if cache.has_state_changed:
+        if os.environ.get("MS_TOKEN_CACHE_DATA"):
+            return
         with open(TOKEN_CACHE_FILE, "w") as f:
             f.write(cache.serialize())
 
