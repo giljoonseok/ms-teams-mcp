@@ -8,3 +8,5 @@ build/
 dist/
 .ms_mcp_token.json
 .claude/
+uv.lock
+guide.md
