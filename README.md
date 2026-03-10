@@ -77,7 +77,7 @@ claude mcp add ms-teams \
   -e MS_CLIENT_ID=<your-client-id> \
   -e MS_CLIENT_SECRET=<your-client-secret> \
   -e MS_TENANT_ID=<your-tenant-id> \
-  -- uvx --from git+https://github.com/giljoonseok/ms-teams-mcp.git ms-teams-mcp
+  -- uvx --from ms-teams-mcp ms-teams-mcp
 ```
 
 **Windows (PowerShell):**
@@ -87,7 +87,7 @@ claude mcp add ms-teams `
   -e MS_CLIENT_ID=<your-client-id> `
   -e MS_CLIENT_SECRET=<your-client-secret> `
   -e MS_TENANT_ID=<your-tenant-id> `
-  -- uvx --from "git+https://github.com/giljoonseok/ms-teams-mcp.git" ms-teams-mcp
+  -- uvx --from ms-teams-mcp ms-teams-mcp
 ```
 
 > **Windows Note**: If `uvx` is not found, use `uvx.cmd` or the full path `%USERPROFILE%\.local\bin\uvx.cmd`.
@@ -105,7 +105,7 @@ Add to `.vscode/mcp.json` in your project root (or under `"mcp"` key in user `se
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/giljoonseok/ms-teams-mcp.git",
+        "ms-teams-mcp",
         "ms-teams-mcp"
       ],
       "env": {
@@ -135,7 +135,7 @@ Add to your config file:
       "command": "uvx",
       "args": [
         "--from",
-        "git+https://github.com/giljoonseok/ms-teams-mcp.git",
+        "ms-teams-mcp",
         "ms-teams-mcp"
       ],
       "env": {
@@ -153,7 +153,7 @@ Add to your config file:
 ### pip Install
 
 ```bash
-pip install git+https://github.com/giljoonseok/ms-teams-mcp.git
+pip install ms-teams-mcp
 
 claude mcp add ms-teams \
   -s user \
@@ -163,8 +163,6 @@ claude mcp add ms-teams \
   -- ms-teams-mcp
 ```
 
-> **Windows (PowerShell)**: Use `pip install "git+..."` (quoted URL) and replace `\` with `` ` `` for line continuation.
-
 ### Authentication
 
 On first use, call the `authenticate` tool from your MCP client — it will provide a Device Code Flow URL to sign in via your browser.
@@ -173,7 +171,7 @@ Alternatively, you can authenticate from the CLI before starting:
 
 ```bash
 # Using uvx
-uvx --from git+https://github.com/giljoonseok/ms-teams-mcp.git \
+uvx --from ms-teams-mcp \
   ms-teams-mcp auth \
   --client-id <your-client-id> \
   --client-secret <your-client-secret> \
@@ -195,7 +193,7 @@ Token is cached at `~/.ms_mcp_token.json` and silently renewed on subsequent run
 uv cache clean
 
 # pip — force reinstall
-pip install --upgrade --force-reinstall git+https://github.com/giljoonseok/ms-teams-mcp.git
+pip install --upgrade --force-reinstall ms-teams-mcp
 ```
 
 The server automatically checks for updates on startup (once per 24h) and notifies via stderr. You can also call the `check_update` tool from any MCP client.
