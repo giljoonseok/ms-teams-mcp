@@ -1573,23 +1573,58 @@ def cmd_auth():
         print(f"\nToken saved! Account: {username}")
         print(f"Location: {TOKEN_CACHE_FILE}")
 
+def _parse_serve_args(args):
+    """Parse --transport, --host, --port for serve subcommand"""
+    opts = {"transport": "streamable-http", "host": "127.0.0.1", "port": "7979"}
+    i = 0
+    while i < len(args):
+        if args[i] == "--transport" and i + 1 < len(args):
+            opts["transport"] = args[i + 1]
+            i += 2
+        elif args[i] == "--host" and i + 1 < len(args):
+            opts["host"] = args[i + 1]
+            i += 2
+        elif args[i] == "--port" and i + 1 < len(args):
+            opts["port"] = args[i + 1]
+            i += 2
+        else:
+            i += 1
+    return opts
+
+def _print_usage():
+    print("Usage:")
+    print("  ms-teams-mcp                         # Run MCP server (stdio)")
+    print("  ms-teams-mcp serve                   # Run MCP server (streamable-http)")
+    print("  ms-teams-mcp serve --transport sse   # Run MCP server (SSE)")
+    print("  ms-teams-mcp serve --host 0.0.0.0    # Allow external connections")
+    print("  ms-teams-mcp serve --port 9000       # Custom port (default: 7979)")
+    print("  ms-teams-mcp auth                    # Device Code Flow auth")
+    print("  ms-teams-mcp auth \\")
+    print("    --client-id <ID> \\")
+    print("    --client-secret <SECRET> \\")
+    print("    --tenant-id <TENANT>                    # Auth with CLI args")
+    print("  ms-teams-mcp --version                # Show version")
+
 def main():
     if len(sys.argv) > 1:
         command = sys.argv[1]
         if command == "auth":
             _parse_auth_args(sys.argv[2:])
             cmd_auth()
+        elif command == "serve":
+            opts = _parse_serve_args(sys.argv[2:])
+            transport = opts["transport"]
+            host = opts["host"]
+            port = int(opts["port"])
+            update_msg = _check_for_update()
+            if update_msg and sys.stderr is not None:
+                print(update_msg, file=sys.stderr, flush=True)
+            print(f"Starting MCP server ({transport}) on {host}:{port}...")
+            mcp.run(transport=transport, host=host, port=port)
         elif command in ("--version", "-v", "version"):
             print(f"ms-teams-mcp {__version__}")
         else:
-            print("Usage:")
-            print("  ms-teams-mcp                    # Run MCP server")
-            print("  ms-teams-mcp auth               # Device Code Flow auth")
-            print("  ms-teams-mcp auth \\")
-            print("    --client-id <ID> \\")
-            print("    --client-secret <SECRET> \\")
-            print("    --tenant-id <TENANT>                 # Auth with CLI args")
-            print("  ms-teams-mcp --version           # Show version")
+            _print_usage()
             sys.exit(1)
     else:
         update_msg = _check_for_update()

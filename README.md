@@ -13,6 +13,7 @@ Use natural language in Claude Code, VS Code, Claude Desktop, or any MCP client 
 - **People** — Search users across the organization
 - **Utilities** — Unread summary, auth status, version update check
 - **Auth** — Device Code Flow authentication directly from MCP or CLI
+- **Web Transport** — SSE and streamable-http support for remote access from Claude Desktop, Claude web, and other MCP clients
 
 ## Prerequisites
 
@@ -384,6 +385,96 @@ All list tools support `top`, `skip`, and `next_link` parameters for pagination.
 ```
 
 </details>
+
+## Web Transport (SSE / Streamable HTTP)
+
+In addition to the default `stdio` mode, the server can run as an HTTP service — enabling remote connections from Claude Desktop, Claude web (claude.ai), and other MCP clients.
+
+### Quick Start
+
+```bash
+# Start with streamable-http (default web transport)
+ms-teams-mcp serve
+
+# Start with SSE transport
+ms-teams-mcp serve --transport sse
+
+# Custom host/port (default: 127.0.0.1:7979)
+ms-teams-mcp serve --host 0.0.0.0 --port 9000
+```
+
+### Claude Desktop (SSE)
+
+Update your Claude Desktop config to connect via URL instead of launching a subprocess:
+
+- **Windows**: `%APPDATA%\Claude\claude_desktop_config.json`
+- **macOS**: `~/Library/Application Support/Claude/claude_desktop_config.json`
+- **Linux**: `~/.config/Claude/claude_desktop_config.json`
+
+```json
+{
+  "mcpServers": {
+    "ms-teams": {
+      "url": "http://localhost:7979/sse"
+    }
+  }
+}
+```
+
+Then start the server separately:
+
+```bash
+MS_CLIENT_ID=<id> MS_CLIENT_SECRET=<secret> MS_TENANT_ID=<tenant> \
+  ms-teams-mcp serve --transport sse
+```
+
+### Claude Web (claude.ai)
+
+Claude web requires **streamable-http** over **HTTPS** on a public URL. You need a Pro, Team, or Enterprise plan.
+
+**1. Start the server:**
+
+```bash
+ms-teams-mcp serve --host 0.0.0.0 --port 7979
+```
+
+**2. Set up a reverse proxy with HTTPS** (e.g., nginx + Let's Encrypt):
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name mcp.your-domain.com;
+
+    ssl_certificate     /etc/letsencrypt/live/mcp.your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/mcp.your-domain.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:7979;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+        proxy_set_header Host $host;
+    }
+}
+```
+
+**3. Connect from Claude web:**
+
+Go to Claude.ai → Settings → MCP Connectors → Add → enter your server URL:
+
+```
+https://mcp.your-domain.com/mcp
+```
+
+### Transport Comparison
+
+| Mode | Command | Endpoint | Use Case |
+|------|---------|----------|----------|
+| stdio | `ms-teams-mcp` | — | Claude Code, VS Code (local) |
+| SSE | `ms-teams-mcp serve --transport sse` | `http://host:7979/sse` | Claude Desktop (local/remote) |
+| streamable-http | `ms-teams-mcp serve` | `http://host:7979/mcp` | Claude web, remote clients |
+
+> **Note:** The server uses a single token cache (`~/.ms_mcp_token.json`), so all clients connecting to the same server share one Microsoft account. For per-user access, each user should run their own server instance.
 
 ## Troubleshooting
 
