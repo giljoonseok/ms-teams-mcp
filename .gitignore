@@ -10,4 +10,4 @@ dist/
 .claude/
 uv.lock
 .env
-guide.md
+user_guide.md
