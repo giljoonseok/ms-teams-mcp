@@ -9,4 +9,5 @@ dist/
 .ms_mcp_token.json
 .claude/
 uv.lock
+.env
 guide.md

@@ -8,6 +8,7 @@ import os
 import re
 import json
 import io
+import subprocess
 from collections import Counter
 from datetime import datetime, timezone, timedelta
 if sys.stdout is not None:
@@ -224,8 +225,8 @@ def _parse_version(version_str: str) -> tuple:
     except (ValueError, AttributeError):
         return (0,)
 
-def _check_for_update() -> str | None:
-    """Check GitHub for newer version. Returns message if update available, None otherwise."""
+def _check_and_auto_update() -> str | None:
+    """Check PyPI for newer version and auto-update if available. Returns status message."""
     try:
         # Check cache — skip if checked within 24 hours
         if os.path.exists(UPDATE_CHECK_CACHE):
@@ -238,20 +239,15 @@ def _check_for_update() -> str | None:
                 if (now - last_dt).total_seconds() < 86400:
                     return cache.get("message")
 
-        # Fetch latest tag from GitHub
+        # Fetch latest version from PyPI
         resp = requests.get(
-            f"https://api.github.com/repos/{GITHUB_REPO}/tags",
-            timeout=2,
-            params={"per_page": 1},
+            "https://pypi.org/pypi/ms-teams-mcp/json",
+            timeout=5,
         )
         if not resp.ok:
             return None
 
-        tags = resp.json()
-        if not tags:
-            return None
-
-        latest_tag = tags[0].get("name", "")
+        latest_tag = resp.json().get("info", {}).get("version", "")
         if not latest_tag:
             return None
 
@@ -261,15 +257,34 @@ def _check_for_update() -> str | None:
         message = None
         if latest_ver > current_ver:
             message = (
-                f"[ms-teams-mcp] Update available: {__version__} -> {latest_tag}\n"
-                f"  pip install --upgrade git+https://github.com/{GITHUB_REPO}.git"
+                f"[ms-teams-mcp] Updating: {__version__} -> {latest_tag} ..."
             )
+            if sys.stderr is not None:
+                print(message, file=sys.stderr, flush=True)
+
+            # Auto-update via pip
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "ms-teams-mcp"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                message = (
+                    f"[ms-teams-mcp] Updated successfully: {__version__} -> {latest_tag}\n"
+                    f"  Please restart the server to use the new version."
+                )
+            else:
+                message = (
+                    f"[ms-teams-mcp] Auto-update failed. Run manually:\n"
+                    f"  pip install --upgrade ms-teams-mcp"
+                )
+        else:
+            message = None
 
         # Save cache
         with open(UPDATE_CHECK_CACHE, "w") as f:
             json.dump({
                 "last_check": datetime.now(timezone.utc).isoformat(),
-                "latest_tag": latest_tag,
+                "latest_version": latest_tag,
                 "message": message,
             }, f)
 
@@ -1386,30 +1401,38 @@ def get_unread_summary() -> str:
 
 @mcp.tool()
 def check_update() -> str:
-    """Check if a newer version of ms-teams-mcp is available on GitHub"""
+    """Check if a newer version of ms-teams-mcp is available on PyPI and auto-update if outdated"""
     try:
         resp = requests.get(
-            f"https://api.github.com/repos/{GITHUB_REPO}/tags",
+            "https://pypi.org/pypi/ms-teams-mcp/json",
             timeout=5,
-            params={"per_page": 1},
         )
         if not resp.ok:
             return f"Failed to check for updates (HTTP {resp.status_code})."
 
-        tags = resp.json()
-        if not tags:
-            return f"Current version: {__version__}. No releases found on GitHub."
+        latest_tag = resp.json().get("info", {}).get("version", "")
+        if not latest_tag:
+            return f"Current version: {__version__}. No releases found on PyPI."
 
-        latest_tag = tags[0].get("name", "")
         latest_ver = _parse_version(latest_tag)
         current_ver = _parse_version(__version__)
 
         if latest_ver > current_ver:
+            result = subprocess.run(
+                [sys.executable, "-m", "pip", "install", "--upgrade", "ms-teams-mcp"],
+                capture_output=True, text=True, timeout=120,
+            )
+            if result.returncode == 0:
+                return (
+                    f"Updated successfully!\n"
+                    f"  {__version__} -> {latest_tag}\n"
+                    f"  Please restart the server to use the new version."
+                )
             return (
-                f"Update available!\n"
+                f"Update available but auto-update failed.\n"
                 f"  Current: {__version__}\n"
                 f"  Latest:  {latest_tag}\n"
-                f"  Run: pip install --upgrade git+https://github.com/{GITHUB_REPO}.git"
+                f"  Run manually: pip install --upgrade ms-teams-mcp"
             )
         return f"You are up to date (version {__version__})."
     except Exception as e:
@@ -1619,7 +1642,7 @@ def main():
             transport = opts["transport"]
             host = opts["host"]
             port = int(opts["port"])
-            update_msg = _check_for_update()
+            update_msg = _check_and_auto_update()
             if update_msg and sys.stderr is not None:
                 print(update_msg, file=sys.stderr, flush=True)
             print(f"Starting MCP server ({transport}) on {host}:{port}...")
@@ -1630,7 +1653,7 @@ def main():
             _print_usage()
             sys.exit(1)
     else:
-        update_msg = _check_for_update()
+        update_msg = _check_and_auto_update()
         if update_msg and sys.stderr is not None:
             print(update_msg, file=sys.stderr, flush=True)
         print("Starting Microsoft Teams MCP server...")
