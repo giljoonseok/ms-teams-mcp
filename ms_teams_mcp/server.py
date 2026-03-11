@@ -107,16 +107,19 @@ def _reload_cache():
         pass
 
 def get_token():
-    app = _get_app()
-    for attempt in range(2):
-        accounts = app.get_accounts()
-        if accounts:
-            result = app.acquire_token_silent(SCOPES, account=accounts[0])
-            if result and "access_token" in result:
-                save_cache()
-                return result["access_token"]
-        if attempt == 0:
-            _reload_cache()  # Reload cache and retry (in case auth was done via CLI)
+    # Try ConfidentialClientApplication first, then fall back to PublicClientApplication.
+    # CLI auth uses PublicClient, so its cached accounts may not be visible to ConfidentialClient.
+    for app_getter in (_get_app, _get_pub_app):
+        app = app_getter()
+        for attempt in range(2):
+            accounts = app.get_accounts()
+            if accounts:
+                result = app.acquire_token_silent(SCOPES, account=accounts[0])
+                if result and "access_token" in result:
+                    save_cache()
+                    return result["access_token"]
+            if attempt == 0:
+                _reload_cache()
     raise Exception(
         "Authentication required. Run 'ms-teams-mcp auth' or "
         "call the authenticate tool in MCP."
